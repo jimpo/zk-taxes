@@ -5,7 +5,7 @@ use ff::{Field, PrimeField, PrimeFieldRepr};
 use group::CurveAffine;
 use pairing::Engine;
 use rand::RngCore;
-use sapling_crypto::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown};
+use sapling_crypto::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown, PrimeOrder};
 use std::fmt::{self, Display, Formatter};
 use std::mem::size_of;
 
@@ -132,16 +132,6 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 	{
 		self.check_values_balance()?;
 
-		let p_g = <edwards::Point<E, Unknown>>::from(
-			params.generator(FixedGenerators::ValueCommitmentValue).clone()
-		);
-		let p_h = <edwards::Point<E, Unknown>>::from(
-			params.generator(FixedGenerators::ValueCommitmentRandomness).clone()
-		);
-
-		let commit = |val, key: E::Fs| {
-			p_g.mul(val, params).add(&p_h.mul(key.into_repr(), params), params)
-		};
 		let (input_nonces, output_nonces) = self.generate_nonces(rng);
 		let anchor = E::Fr::from_repr(merkle_tree.root())
 			.map_err(|_| Error::AccumulatorStateInvalid)?;
@@ -180,7 +170,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 					.map_err(|e| Error::ProofSynthesis(e))?;
 
 				Ok(TransactionInput {
-					value_comm: commit(input.value, nonce),
+					value_comm: value_commitment(input.value, &nonce, params).into(),
 					nullifier,
 					pubkey: (pubkey_base, pubkey_raised),
 					proof,
@@ -189,7 +179,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 			.collect::<Result<Vec<_>, _>>()?;
 		let outputs = self.outputs.into_iter().zip(output_nonces.into_iter())
 			.map(|(output, nonce)| TransactionOutput {
-				value_comm: commit(output.value, nonce),
+				value_comm: value_commitment(output.value, &nonce, params).into(),
 			})
 			.collect::<Vec<_>>();
 
@@ -247,17 +237,9 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 	{
 		let prove_spend = |assigned: spend::Assignment<E>, _rng: &mut R| {
 			// Double check that assignment is valid.
-			let p_g = <edwards::Point<E, Unknown>>::from(
-				params.generator(FixedGenerators::ValueCommitmentValue).clone()
+			let value_comm_old = value_commitment(
+				assigned.value, &assigned.value_nonce_old, params
 			);
-			let p_h = <edwards::Point<E, Unknown>>::from(
-				params.generator(FixedGenerators::ValueCommitmentRandomness).clone()
-			);
-			let commit = |val, key: E::Fs| {
-				p_g.mul(val, params).add(&p_h.mul(key.into_repr(), params), params)
-			};
-
-			let value_comm_old = commit(assigned.value, assigned.value_nonce_old);
 			// let value_comm_new = commit(assigned.value, assigned.value_nonce_new);
 
 			let pubkey_raised_old = assigned.pubkey_base_old.mul(assigned.privkey, params);
@@ -272,27 +254,25 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 
 			let coin_old = Coin {
 				position: assigned.position,
-				value_comm: value_comm_old,
+				value_comm: value_comm_old.into(),
 				pubkey: (assigned.pubkey_base_old, pubkey_raised_old),
 			};
 
 			let mut encoded_coin = Vec::new();
 			coin_old.write(&mut encoded_coin).map_err(|e| e.to_string())?;
 
-			let hasher = <PedersenHasher<E>>::new(params);
+			let leaf = merkle_tree.hasher().hash_leaf(&encoded_coin);
+			let branch = assigned.auth_path.iter()
+				.map(|node| node.into_repr())
+				.collect::<Vec<_>>();
 
-			let mut merkle_node = hasher.hash_leaf(&encoded_coin);
-			for (height, path_element) in assigned.auth_path.into_iter().enumerate() {
-				let path_element = path_element.into_repr();
-				let (left, right) = if assigned.position & (1 << height) == 0 {
-					(&merkle_node, &path_element)
-				} else {
-					(&path_element, &merkle_node)
-				};
-				merkle_node = hasher.hash_internal(height, left, right);
-			}
-
-			if merkle_node != assigned.anchor.into_repr() {
+			let anchor_is_valid = merkle_tree.check_branch_against_root(
+				assigned.position,
+				&leaf,
+				&branch,
+				&assigned.anchor.into_repr()
+			);
+			if anchor_is_valid {
 				return Err("merkle root mismatch".into());
 			}
 
@@ -350,6 +330,15 @@ fn compute_nullifier<E>(privkey: &E::Fs, position: u64) -> Nullifier
 	nullifier
 }
 
+fn value_commitment<E>(value: Value, nonce: &E::Fs, params: &E::Params)
+	-> edwards::Point<E, PrimeOrder>
+	where E: JubjubEngine
+{
+	let g = params.generator(FixedGenerators::ValueCommitmentValue);
+	let h = params.generator(FixedGenerators::ValueCommitmentRandomness);
+	g.mul(value, params).add(&h.mul(nonce.into_repr(), params), params)
+}
+
 fn is_low_order<E>(pt: &edwards::Point<E, Unknown>, params: &E::Params) -> bool
 	where E: JubjubEngine
 {
@@ -364,15 +353,40 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 	use sapling_crypto::jubjub::{edwards, FixedGenerators, JubjubBls12};
 
-	use crate::validation::{self, AccumulatorState};
+	use crate::validation;
 
 	impl BlockNumber for u64 {}
+
+	fn add_input<E>(
+		merkle_tree: &mut IncrementalMerkleTree<PedersenHasher<E>>,
+		input: &TransactionInputDesc<E>,
+		params: &E::Params,
+	)
+		where E: JubjubEngine
+	{
+		let pubkey_base_point = input.pubkey_base.clone();
+		let pubkey_raised_point = pubkey_base_point.mul(input.privkey.into_repr(), params);
+		let coin = Coin {
+			position: input.position,
+			value_comm: value_commitment(input.value, &input.value_nonce, params).into(),
+			pubkey: (pubkey_base_point, pubkey_raised_point),
+		};
+
+		let mut encoded_coin = Vec::new();
+		coin.write(&mut encoded_coin).unwrap();
+
+		merkle_tree.track_next_leaf();
+		merkle_tree.push_data(&encoded_coin);
+	}
 
 	#[test]
 	fn build_empty_transaction() {
 		let params = JubjubBls12::new();
 		let mut rng = StdRng::seed_from_u64(0);
 		let block_number = 42;
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, PedersenHasher::new(&params)
+		);
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![],
@@ -382,7 +396,7 @@ mod tests {
 
 		let tx = tx_desc.build_with_dummy_proofs(
 			block_number,
-			<AccumulatorState<Bls12>>::default(),
+			&merkle_tree,
 			&params,
 			&mut rng
 		).unwrap();
@@ -398,6 +412,9 @@ mod tests {
 		let params = JubjubBls12::new();
 		let mut rng = StdRng::seed_from_u64(0);
 		let block_number = 42;
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, PedersenHasher::new(&params)
+		);
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
@@ -426,9 +443,14 @@ mod tests {
 			],
 			issuance: 400_000,
 		};
+
+		for input in tx_desc.inputs.iter() {
+			add_input(&mut merkle_tree, input, &params);
+		}
+
 		let tx = tx_desc.build_with_dummy_proofs(
 			block_number,
-			<AccumulatorState<Bls12>>::default(),
+			&merkle_tree,
 			&params,
 			&mut rng
 		).unwrap();
@@ -444,6 +466,9 @@ mod tests {
 		let params = JubjubBls12::new();
 		let mut rng = StdRng::seed_from_u64(0);
 		let block_number = 42;
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, PedersenHasher::new(&params)
+		);
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
@@ -465,9 +490,14 @@ mod tests {
 			outputs: vec![],
 			issuance: -300_000,
 		};
+
+		for input in tx_desc.inputs.iter() {
+			add_input(&mut merkle_tree, input, &params);
+		}
+
 		let tx = tx_desc.build_with_dummy_proofs(
 			block_number,
-			<AccumulatorState<Bls12>>::default(),
+			&merkle_tree,
 			&params,
 			&mut rng
 		).unwrap();
@@ -483,6 +513,9 @@ mod tests {
 		let params = JubjubBls12::new();
 		let mut rng = StdRng::seed_from_u64(0);
 		let block_number = 42;
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, PedersenHasher::new(&params)
+		);
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![],
@@ -498,7 +531,7 @@ mod tests {
 		};
 		let tx = tx_desc.build_with_dummy_proofs(
 			block_number,
-			<AccumulatorState<Bls12>>::default(),
+			&merkle_tree,
 			&params,
 			&mut rng
 		).unwrap();
@@ -514,6 +547,9 @@ mod tests {
 		let params = JubjubBls12::new();
 		let mut rng = StdRng::seed_from_u64(0);
 		let block_number = 42;
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, PedersenHasher::new(&params)
+		);
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
@@ -543,9 +579,13 @@ mod tests {
 			issuance: 0,
 		};
 
+		for input in tx_desc.inputs.iter() {
+			add_input(&mut merkle_tree, input, &params);
+		}
+
 		let err = tx_desc.build_with_dummy_proofs(
 			block_number,
-			<AccumulatorState<Bls12>>::default(),
+			&merkle_tree,
 			&params,
 			&mut rng
 		).err().unwrap();
@@ -558,6 +598,9 @@ mod tests {
 		let params = JubjubBls12::new();
 		let mut rng = StdRng::seed_from_u64(0);
 		let block_number = 42;
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, PedersenHasher::new(&params)
+		);
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
@@ -579,7 +622,7 @@ mod tests {
 
 		let err = tx_desc.build_with_dummy_proofs(
 			block_number,
-			<AccumulatorState<Bls12>>::default(),
+			&merkle_tree,
 			&params,
 			&mut rng
 		).err().unwrap();

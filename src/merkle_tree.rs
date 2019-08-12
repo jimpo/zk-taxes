@@ -60,6 +60,22 @@ impl<Hasher> IncrementalMerkleTree<Hasher>
         })
     }
 
+    pub fn empty(depth: usize, hasher: Hasher) -> Self {
+        let empty_subtree_roots = compute_empty_subtree_roots(depth, &hasher);
+        IncrementalMerkleTree {
+            depth,
+            size: 0,
+            subtree_roots: Vec::new(),
+            empty_subtree_roots,
+            tracked_leaves: HashMap::new(),
+            hasher,
+        }
+    }
+
+    pub fn hasher(&self) -> &Hasher {
+        &self.hasher
+    }
+
 	pub fn size(&self) -> u64 {
 		self.size
 	}
@@ -178,7 +194,18 @@ impl<Hasher> IncrementalMerkleTree<Hasher>
         self.tracked_leaves.get(&index).map(|branch| branch.as_slice())
     }
 
-    pub fn check_branch(&self, index: u64, leaf: &Hasher::Out, branch: &[Hasher::Out]) -> bool {
+    pub fn check_branch_against_root(
+        &self,
+        index: u64,
+        leaf: &Hasher::Out,
+        branch: &[Hasher::Out],
+        root: &Hasher::Out
+    ) -> bool
+    {
+        if branch.len() != self.depth {
+            return false;
+        }
+
         let computed_root = branch.iter().enumerate()
             .fold(leaf.clone(), |child_hash, (height, sibling_hash)| {
                 let height_bit = 1u64 << (height as u64);
@@ -190,7 +217,11 @@ impl<Hasher> IncrementalMerkleTree<Hasher>
                     };
                 self.hasher.hash_internal(height, left_child, right_child)
             });
-        computed_root == self.root()
+        computed_root == *root
+    }
+
+    pub fn check_branch(&self, index: u64, leaf: &Hasher::Out, branch: &[Hasher::Out]) -> bool {
+        self.check_branch_against_root(index, leaf, branch, &self.root())
     }
 }
 

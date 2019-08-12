@@ -319,42 +319,42 @@ mod tests {
 	use crate::constants::MERKLE_DEPTH;
 
 	use sapling_crypto::jubjub::JubjubBls12;
-	use sapling_crypto::circuit::test::TestConstraintSystem;
+	// use sapling_crypto::circuit::test::TestConstraintSystem;
 	use pairing::bls12_381::Bls12;
 
-	#[test]
-	fn print_circuit_sizes() {
-		fn count_constraints(
-			n_inputs: usize,
-			n_outputs: usize,
-			n_kernels: usize,
-			params: &JubjubBls12
-		) -> usize
-		{
-			let transaction = Circuit::without_assignment(params, MERKLE_DEPTH);
-
-			let mut cs = TestConstraintSystem::<Bls12>::new();
-			transaction.synthesize(&mut cs).unwrap();
-			cs.num_constraints()
-		}
-
-		let params = &JubjubBls12::new();
-
-		let combinations = [
-			(0, 0, 0),
-			(1, 0, 0),
-			(100, 0, 0),
-			(1, 0, 0),
-			(0, 100, 0),
-			(0, 0, 1),
-			(0, 0, 10),
-		];
-		for (n_inputs, n_outputs, n_kernels) in combinations.iter() {
-			let constraints = count_constraints(*n_inputs, *n_outputs, *n_kernels, params);
-			println!(
-				"inputs: {}, outputs: {}, kernels: {}, constraints: {}",
-				*n_inputs, *n_outputs, *n_kernels, constraints
-			)
-		}
-	}
+//	#[test]
+//	fn print_circuit_sizes() {
+//		fn count_constraints(
+//			n_inputs: usize,
+//			n_outputs: usize,
+//			n_kernels: usize,
+//			params: &JubjubBls12
+//		) -> usize
+//		{
+//			let transaction = Circuit::without_assignment(params, MERKLE_DEPTH);
+//
+//			let mut cs = TestConstraintSystem::<Bls12>::new();
+//			transaction.synthesize(&mut cs).unwrap();
+//			cs.num_constraints()
+//		}
+//
+//		let params = &JubjubBls12::new();
+//
+//		let combinations = [
+//			(0, 0, 0),
+//			(1, 0, 0),
+//			(100, 0, 0),
+//			(1, 0, 0),
+//			(0, 100, 0),
+//			(0, 0, 1),
+//			(0, 0, 10),
+//		];
+//		for (n_inputs, n_outputs, n_kernels) in combinations.iter() {
+//			let constraints = count_constraints(*n_inputs, *n_outputs, *n_kernels, params);
+//			println!(
+//				"inputs: {}, outputs: {}, kernels: {}, constraints: {}",
+//				*n_inputs, *n_outputs, *n_kernels, constraints
+//			)
+//		}
+//	}
 }
