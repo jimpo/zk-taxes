@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::cmp::min;
-use std::error;
 use std::fmt::{self, Display, Formatter};
 
 use crate::hasher::MerkleHasher;
@@ -18,7 +17,7 @@ impl Display for Error {
     }
 }
 
-impl error::Error for Error {}
+impl std::error::Error for Error {}
 
 pub struct IncrementalMerkleTree<Hasher>
     where Hasher: MerkleHasher

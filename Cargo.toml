@@ -11,6 +11,7 @@ byteorder = "^1.3"
 ff = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
 group = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
 pairing = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
+parity-codec = { version = "^4.1", features = ["derive"] }
 rand = "^0.7"
 sapling-crypto = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
 
