@@ -143,7 +143,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 		};
 		let (input_nonces, output_nonces) = self.generate_nonces(rng);
 		let anchor = E::Fr::from_repr(accumulator_state)
-			.map_err(|e| Error::AccumulatorStateInvalid)?;
+			.map_err(|_| Error::AccumulatorStateInvalid)?;
 
 		let inputs = self.inputs.into_iter().zip(input_nonces.into_iter())
 			.map(|(input, nonce)| {

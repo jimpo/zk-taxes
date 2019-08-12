@@ -100,29 +100,97 @@ impl<Hasher> IncrementalMerkleTree<Hasher>
         let index = self.size;
         self.size += 1;
 
+        // Determine the maximum height of any branch elements for any leaves that are not the
+        // root of an empty subtree.
+        let max_non_empty_branch_height = subtree_height(0, self.size);
+
         // Determine the height of the largest fully-populated subtree that this leaf belongs in.
-        let subtree_height = subtree_height(index, self.size);
+        let subtree_root_height = subtree_height(index, self.size);
 
         // Compute the new root of this fully-populated subtree.
-        let subtree_roots_len = self.subtree_roots.len();
-        let new_subtree_root = self.subtree_roots[(subtree_roots_len - subtree_height)..].iter()
-            .rev()
-            .enumerate()
-            .fold(leaf, |right_hash, (i, left_hash)| {
-                self.hasher.hash_internal(i, left_hash, &right_hash)
-            });
+		let mut new_nodes = Vec::with_capacity(max_non_empty_branch_height + 1);
+        new_nodes.push(leaf);
 
         // Drop all roots that are internal to this larger subtree and replace with the new root.
-        self.subtree_roots.truncate(subtree_roots_len - subtree_height);
-        self.subtree_roots.push(new_subtree_root);
+        let mut subtree_root_iter = self.subtree_roots.iter().rev();
+		for height in 0..max_non_empty_branch_height {
+            let child_hash = &new_nodes[height];
+
+            let height_bit = 1u64 << (height as u64);
+            let (left_child, right_child) =
+                if index & height_bit == 0 {
+                    let right_child = &self.empty_subtree_roots[height];
+                    (child_hash, right_child)
+                } else {
+                    let left_child = subtree_root_iter.next()
+                        .expect("subtree roots must be non-empty");
+                    (left_child, child_hash)
+                };
+            let new_node = self.hasher.hash_internal(height, left_child, right_child);
+            new_nodes.push(new_node);
+        }
+
+        // Drop all roots that are internal to this larger subtree and replace with the new root.
+        let subtree_roots_len = self.subtree_roots.len();
+        self.subtree_roots.truncate(subtree_roots_len - subtree_root_height);
+        self.subtree_roots.push(new_nodes[subtree_root_height].clone());
+
+        // Update all tracked branches.
+        for (&leaf_index, branch) in self.tracked_leaves.iter_mut() {
+            assert!(leaf_index <= index);
+            if leaf_index == index {
+                continue;
+            }
+
+            let update_index = subtree_height(leaf_index, index);
+            branch[update_index] = new_nodes[update_index];
+        }
     }
 
     fn is_full(&self) -> bool {
         self.size >> (self.depth as u64) != 0
     }
 
+    pub fn track_next_leaf(&mut self) {
+        let index = self.size;
+
+        let mut subtree_root_iter = self.subtree_roots.iter().rev();
+        let branch = (0..self.depth)
+            .map(|height| {
+                let height_bit = 1u64 << (height as u64);
+                if index & height_bit == 0 {
+                    &self.empty_subtree_roots[height]
+                } else {
+                    subtree_root_iter.next().expect("subtree roots must be non-empty")
+                }
+            })
+            .cloned()
+            .collect();
+
+        self.tracked_leaves.insert(index, branch);
+    }
+
     pub fn state(self) -> (u64, Vec<Hasher::Out>) {
         (self.size, self.subtree_roots)
+    }
+
+    pub fn tracked_branch(&self, index: u64) -> Option<&[Hasher::Out]> {
+        self.tracked_leaves.get(&index).map(|branch| branch.as_slice())
+    }
+
+    pub fn check_branch(&self, index: u64, leaf: &Hasher::Out, branch: &[Hasher::Out]) -> bool {
+        let computed_root = branch.iter().enumerate()
+            .fold(leaf.clone(), |child_hash, (height, sibling_hash)| {
+                let height_bit = 1u64 << (height as u64);
+                let (left_child, right_child) =
+                    if index & height_bit == 0 {
+                        (&child_hash, sibling_hash)
+                    } else {
+                        (sibling_hash, &child_hash)
+                    };
+                self.hasher.hash_internal(height, left_child, right_child)
+            });
+        computed_root == self.root()
     }
 }
 
@@ -173,10 +241,10 @@ mod tests {
     use super::*;
     use crate::hasher::PedersenHasher;
 
-	use ff::PrimeFieldRepr;
+	use ff::{PrimeFieldRepr, PrimeField, ScalarEngine};
     use hex::{self, FromHex};
     use pairing::bls12_381::Bls12;
-    use sapling_crypto::jubjub::JubjubBls12;
+    use sapling_crypto::jubjub::{JubjubBls12, JubjubEngine};
     use serde_json;
 
     fn decode_field_element<R: PrimeFieldRepr>(data: &[u8]) -> R {
@@ -226,7 +294,7 @@ mod tests {
         let merkle_leaves_hex: Vec<String> =
             serde_json::from_str(include_str!("test_data/merkle_commitments_sapling.json"))
                 .unwrap();
-        let merkle_leaves: Vec<_> = merkle_leaves_hex.iter()
+        let merkle_leaves: Vec<<<Bls12 as ScalarEngine>::Fr as PrimeField>::Repr> = merkle_leaves_hex.iter()
             .map(|leaf_hex| {
                 let mut leaf = <[u8; 32]>::from_hex(leaf_hex).unwrap();
                 leaf.as_mut().reverse();
@@ -246,11 +314,18 @@ mod tests {
         assert_eq!(hex_encode_field_element(&tree.root()), empty_merkle_roots[4]);
 
         for (i, (leaf, root))
-            in merkle_leaves.into_iter().zip(expected_merkle_roots.iter()).enumerate() {
+            in merkle_leaves.iter().zip(expected_merkle_roots.iter()).enumerate() {
 
-            tree.push_commitment(leaf);
+            tree.track_next_leaf();
+            tree.push_commitment(leaf.clone());
             assert_eq!(tree.size, (i + 1) as u64);
             assert_eq!(hex_encode_field_element(&tree.root()), *root);
+        }
+
+        for (i, leaf) in merkle_leaves.iter().enumerate() {
+            let index = i as u64;
+            let branch = tree.tracked_branch(index).unwrap();
+            assert!(tree.check_branch(index, leaf, branch));
         }
     }
 }
