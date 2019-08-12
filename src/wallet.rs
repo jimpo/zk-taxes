@@ -15,7 +15,8 @@ use crate::proofs::spend;
 use crate::transaction::{
 	BlockNumber, Coin, Nullifier, Transaction, TransactionInput, TransactionOutput, Value,
 };
-use crate::validation::{self, AccumulatorState};
+use crate::validation;
+use crate::merkle_tree::IncrementalMerkleTree;
 
 #[derive(Debug, PartialEq)]
 pub enum Error<BN>
@@ -119,7 +120,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 	pub fn build<'a, BN, R>(
 		self,
 		block_number: BN,
-		accumulator_state: AccumulatorState<E>,
+		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
 		params: &'a <E as JubjubEngine>::Params,
 		rng: &'a mut R,
 		prove_spend: impl Fn(spend::Assignment<E>, &mut R) -> Result<Proof<E>, String>,
@@ -142,7 +143,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 			p_g.mul(val, params).add(&p_h.mul(key.into_repr(), params), params)
 		};
 		let (input_nonces, output_nonces) = self.generate_nonces(rng);
-		let anchor = E::Fr::from_repr(accumulator_state)
+		let anchor = E::Fr::from_repr(merkle_tree.root())
 			.map_err(|_| Error::AccumulatorStateInvalid)?;
 
 		let inputs = self.inputs.into_iter().zip(input_nonces.into_iter())
@@ -151,6 +152,17 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 				let pubkey_base = input.pubkey_base.mul(blinding_factor.into_repr(), params);
 				let pubkey_raised = pubkey_base.mul(input.privkey.into_repr(), params);
 				let nullifier = compute_nullifier::<E>(&input.privkey, input.position);
+				let auth_path = merkle_tree.tracked_branch(input.position)
+					.ok_or_else(|| {
+						Error::ProofSynthesis("could not get auth path for input".to_string())
+					})?;
+				let auth_path = auth_path.iter()
+					.map(|&repr| {
+						E::Fr::from_repr(repr).map_err(|_| {
+							Error::ProofSynthesis("Merkle branch hashes invalid".to_string())
+						})
+					})
+					.collect::<Result<Vec<_>, _>>()?;
 
 				let assignment = spend::Assignment {
 					position: input.position,
@@ -161,7 +173,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 					pubkey_base_old: input.pubkey_base,
 					pubkey_base_new: pubkey_base.clone(),
 					nullifier,
-					auth_path: vec![],
+					auth_path,
 					anchor,
 				};
 				let proof = prove_spend(assignment, rng)
@@ -192,7 +204,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 	pub fn build_with_real_proofs<BN, P, R>(
 		self,
 		block_number: BN,
-		accumulator_state: AccumulatorState<E>,
+		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
 		params: &<E as JubjubEngine>::Params,
 		proof_params: P,
 		rng: &mut R
@@ -214,7 +226,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 		};
 		self.build(
 			block_number,
-			accumulator_state,
+			merkle_tree,
 			params,
 			rng,
 			prove_spend
@@ -224,7 +236,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 	pub fn build_with_dummy_proofs<BN, R>(
 		self,
 		block_number: BN,
-		accumulator_state: AccumulatorState<E>,
+		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
 		params: &<E as JubjubEngine>::Params,
 		rng: &mut R
 	)
@@ -296,7 +308,7 @@ impl<E: Engine + JubjubEngine> TransactionDesc<E> {
 		};
 		self.build(
 			block_number,
-			accumulator_state,
+			merkle_tree,
 			params,
 			rng,
 			prove_spend
