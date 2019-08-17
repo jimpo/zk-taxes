@@ -353,6 +353,7 @@ mod tests {
 	use rand::{SeedableRng, rngs::StdRng};
 	use sapling_crypto::jubjub::{edwards, FixedGenerators, JubjubBls12};
 
+	use crate::proofs;
 	use crate::validation;
 
 	impl BlockNumber for u64 {}
@@ -628,5 +629,61 @@ mod tests {
 		).err().unwrap();
 
 		assert_eq!(err, Error::Validation(validation::Error::UnbalancedTransaction));
+	}
+
+	#[test]
+	fn transaction_with_real_proofs() {
+		let params = JubjubBls12::new();
+		let mut rng = StdRng::seed_from_u64(0);
+		let block_number = 42;
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, PedersenHasher::new(&params)
+		);
+
+		let tx_desc = TransactionDesc::<Bls12> {
+			inputs: vec![
+				TransactionInputDesc {
+					position: 0,
+					value: 100_000,
+					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+					privkey: <Bls12 as JubjubEngine>::Fs::one(),
+					pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+				},
+				TransactionInputDesc {
+					position: 1,
+					value: 200_000,
+					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+					privkey: <Bls12 as JubjubEngine>::Fs::one(),
+					pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+				},
+			],
+			outputs: vec![
+				TransactionOutputDesc {
+					value: 300_000,
+				},
+				TransactionOutputDesc {
+					value: 400_000,
+				},
+			],
+			issuance: 400_000,
+		};
+
+		for input in tx_desc.inputs.iter() {
+			add_input(&mut merkle_tree, input, &params);
+		}
+
+		let proof_params = proofs::tests::spend_params().unwrap();
+		let tx = tx_desc.build_with_real_proofs(
+			block_number,
+			&merkle_tree,
+			&params,
+			&proof_params,
+			&mut rng
+		).unwrap();
+
+		assert_eq!(tx.inputs.len(), 2);
+		assert_eq!(tx.outputs.len(), 2);
+		assert_eq!(tx.issuance, 400_000);
+		assert_eq!(tx.accumulator_state_block_number, block_number);
 	}
 }

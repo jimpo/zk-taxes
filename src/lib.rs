@@ -1,4 +1,4 @@
-pub mod constants;
+mod constants;
 mod hasher;
 mod merkle_tree;
 mod transaction;
