@@ -10,6 +10,7 @@ use std::iter;
 use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, Unknown};
 use zcash_proofs::circuit::{ecc, pedersen_hash};
 
+#[derive(Clone)]
 pub struct Assignment<E>
 	where E: JubjubEngine
 {

@@ -1,7 +1,7 @@
-mod constants;
-mod hasher;
-mod merkle_tree;
-mod transaction;
+pub mod constants;
+pub mod hasher;
+pub mod merkle_tree;
+pub mod transaction;
 pub mod proofs;
-mod wallet;
+pub mod wallet;
 mod validation;

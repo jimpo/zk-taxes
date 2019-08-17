@@ -9,6 +9,7 @@ pub type Value = u64;
 pub type Nullifier = [u8; 32];
 
 pub trait BlockNumber: Debug + Display + Clone {}
+impl BlockNumber for u64 {}
 
 #[derive(PartialEq, Clone)]
 pub struct Transaction<E, BN>
