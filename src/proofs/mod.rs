@@ -1,3 +1,4 @@
+pub mod certificate;
 pub mod spend;
 
 pub mod tests {

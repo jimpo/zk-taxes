@@ -51,6 +51,10 @@ impl<'a, E> Circuit<'a, E>
 			assigned: None,
 		}
 	}
+
+	fn get_assigned<T>(&self, f: impl FnOnce(&Assignment<E>) -> T) -> Option<T> {
+		self.assigned.as_ref().map(f)
+	}
 }
 
 fn num_from_bits_le<E, CS>(value_bits: &[boolean::Boolean]) -> num::Num<E>
@@ -68,14 +72,6 @@ fn num_from_bits_le<E, CS>(value_bits: &[boolean::Boolean]) -> num::Num<E>
 		coeff.double();
 		value_num
 	})
-}
-
-impl<'a, E> Circuit<'a, E>
-	where E: JubjubEngine,
-{
-	fn get_assigned<T>(&self, f: impl FnOnce(&Assignment<E>) -> T) -> Option<T> {
-		self.assigned.as_ref().map(f)
-	}
 }
 
 impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>

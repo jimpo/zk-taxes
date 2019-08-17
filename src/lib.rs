@@ -1,3 +1,4 @@
+pub mod certificate;
 pub mod constants;
 pub mod hasher;
 pub mod merkle_tree;

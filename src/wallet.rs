@@ -702,7 +702,7 @@ mod tests {
 		assert_eq!(err, Error::Validation(validation::Error::UnbalancedTransaction));
 	}
 
-	// #[test]
+	#[test]
 	fn transaction_with_real_proofs() {
 		let params = JubjubBls12::new();
 		let mut rng = StdRng::seed_from_u64(0);
