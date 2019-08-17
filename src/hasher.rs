@@ -1,5 +1,5 @@
 use ff::{self, Field, PrimeField};
-use sapling_crypto::{
+use zcash_primitives::{
     jubjub::JubjubEngine,
     pedersen_hash::{pedersen_hash, Personalization}
 };

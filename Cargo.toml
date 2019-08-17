@@ -5,15 +5,16 @@ authors = ["Jim Posen <jim.posen@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-bellman = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
+bellman = { git = "https://github.com/jimpo/librustzcash", rev = "40f768ed" }
 blake2 = "^0.8"
 byteorder = "^1.3"
-ff = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
-group = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
-pairing = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
+ff = { git = "https://github.com/jimpo/librustzcash", rev = "40f768ed" }
+group = { git = "https://github.com/jimpo/librustzcash", rev = "40f768ed" }
+pairing = { git = "https://github.com/jimpo/librustzcash", rev = "40f768ed" }
 parity-codec = { version = "^4.1", features = ["derive"] }
 rand = "^0.7"
-sapling-crypto = { git = "https://github.com/jimpo/librustzcash", rev = "6333aafe" }
+zcash_primitives = { git = "https://github.com/jimpo/librustzcash", rev = "40f768ed" }
+zcash_proofs = { git = "https://github.com/jimpo/librustzcash", rev = "40f768ed" }
 
 [dev-dependencies]
 hex = "^0.3"

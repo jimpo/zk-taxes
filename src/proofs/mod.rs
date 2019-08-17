@@ -7,11 +7,11 @@ pub mod tests {
 	use bellman::groth16::{generate_random_parameters, Parameters};
 	use pairing::bls12_381::Bls12;
 	use rand::thread_rng;
-	use sapling_crypto::jubjub::JubjubBls12;
 	use std::env;
 	use std::fs::{create_dir, File, OpenOptions};
 	use std::io;
 	use std::path::PathBuf;
+	use zcash_primitives::jubjub::JubjubBls12;
 
 	pub fn spend_params() -> io::Result<Parameters<Bls12>> {
 		params("Spend.dat")

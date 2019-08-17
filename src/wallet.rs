@@ -5,9 +5,9 @@ use ff::{Field, PrimeField, PrimeFieldRepr};
 use group::CurveAffine;
 use pairing::Engine;
 use rand::RngCore;
-use sapling_crypto::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown, PrimeOrder};
 use std::fmt::{self, Display, Formatter};
 use std::mem::size_of;
+use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown, PrimeOrder};
 
 use crate::constants::MERKLE_DEPTH;
 use crate::hasher::{PedersenHasher, MerkleHasher};
@@ -351,7 +351,7 @@ mod tests {
 
 	use pairing::bls12_381::Bls12;
 	use rand::{SeedableRng, rngs::StdRng};
-	use sapling_crypto::jubjub::{edwards, FixedGenerators, JubjubBls12};
+	use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubBls12};
 
 	use crate::proofs;
 	use crate::validation;

@@ -275,8 +275,8 @@ mod tests {
 	use ff::{PrimeFieldRepr, PrimeField, ScalarEngine};
     use hex::{self, FromHex};
     use pairing::bls12_381::Bls12;
-    use sapling_crypto::jubjub::JubjubBls12;
     use serde_json;
+    use zcash_primitives::jubjub::JubjubBls12;
 
     fn decode_field_element<R: PrimeFieldRepr>(data: &[u8]) -> R {
         let mut repr = R::default();

@@ -1,7 +1,7 @@
 use ff::PrimeField;
-use sapling_crypto::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown};
 use std::cmp;
 use std::fmt::{self, Display, Formatter};
+use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown};
 
 use crate::transaction::{BlockNumber, Nullifier, Transaction};
 

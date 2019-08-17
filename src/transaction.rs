@@ -1,9 +1,9 @@
 use bellman::groth16::Proof;
 use byteorder::{LittleEndian, ByteOrder};
 use parity_codec::{Codec, Compact, Encode, Decode};
-use sapling_crypto::jubjub::{edwards, JubjubEngine, Unknown};
 use std::io::{self, Read, Write};
 use std::fmt::{Debug, Display};
+use zcash_primitives::jubjub::{edwards, JubjubEngine, Unknown};
 
 pub type Value = u64;
 pub type Nullifier = [u8; 32];
