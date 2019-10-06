@@ -433,10 +433,9 @@ fn compute_challenge<E>(
 *
 * The verifier computes:
 *
-* \hat R_e = e(A, G2^s_v * X^c * Y^s_m) / e(B, G2)^c
-* \hat R_k = G1^s_k / K^C
-* \hat R_l = G1^s_m * T^s_k / L^c
-* \hat c = HashToScalar(msg || A || B || D || \hat R_e || \hat R_b)
+* \hat R_e = e(σ_1, G2^s_b * X^c * Y^s_id) / e(σ_2, G2)^c
+* \hat R_D = H_1^s_id * H_2^s_q / D^c
+* \hat c = HashToScalar(msg || σ_1 || σ_2 || D || \hat R_e || \hat R_D)
 *
 * then checks that \hat c = c.
 */
@@ -458,7 +457,7 @@ pub fn verify_certificate<E, R>(
 	let mut neg_c = cert.c.clone();
 	neg_c.negate();
 
-	// R_e = e(A, G2^s_b * X^c * Y^s_id) / e(B, G2)^c
+	// R_e = e(σ_1, G2^s_b * X^c * Y^s_id) / e(σ_2, G2)^c
 	let r_e_denominator = E::pairing(cert.sigma.1.clone(), params.g2.clone());
 	let r_e_denominator = r_e_denominator.pow(neg_c.into_repr());
 
@@ -507,6 +506,29 @@ pub fn verify_certificate<E, R>(
 	];
 	groth16::verify_proof(&params.verifying_key, &cert.proof, &public_inputs[..])
 		.map_err(Error::ProofSynthesis)
+}
+
+/**
+* The authority determines the user ID of the certificate.
+*
+* The user's identity is the decryption of the El-Gamal ciphertext τ in the signature.
+*/
+pub fn trace_certificate<E>(
+	params: &PublicParams<E>,
+	authority_key: &AuthorityKey<E>,
+	cert: &AnonymousCertificate<E>,
+) -> E::Fr
+	where E: JubjubEngine
+{
+	// K = τ * P_1^{-t}
+	let mut neg_t = authority_key.t.clone();
+	neg_t.negate();
+
+	let k_g3 = cert.pk.0
+		.mul(neg_t, &params.jubjub_params)
+		.add(&cert.tau, &params.jubjub_params);
+
+	k_g3.to_xy().1
 }
 
 /**
@@ -565,5 +587,8 @@ mod tests {
 			&authority_key.pubkey,
 			&certificate,
 		).unwrap());
+
+		let traced_id = trace_certificate(&params, &authority_key, &certificate);
+		assert_eq!(traced_id, user_key.id());
 	}
 }
