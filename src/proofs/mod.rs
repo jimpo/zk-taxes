@@ -3,6 +3,7 @@ pub mod spend;
 
 pub mod tests {
 	use crate::constants::MERKLE_DEPTH;
+	use crate::proofs::certificate;
 	use crate::proofs::spend;
 
 	use bellman::groth16::{generate_random_parameters, Parameters};
@@ -14,10 +15,17 @@ pub mod tests {
 	use std::path::PathBuf;
 	use zcash_primitives::jubjub::JubjubBls12;
 
+	pub fn certificate_params() -> io::Result<Parameters<Bls12>> { params("Certificate.dat") }
 	pub fn spend_params() -> io::Result<Parameters<Bls12>> {
 		params("Spend.dat")
 	}
 
+	pub fn generate_certificate_params() -> io::Result<()> {
+		generate_params(
+			"Certificate.dat",
+			certificate::Circuit::without_assignment(&JubjubBls12::new())
+		)
+	}
 	pub fn generate_spend_params() -> io::Result<()> {
 		generate_params(
 			"Spend.dat",

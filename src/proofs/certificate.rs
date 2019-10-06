@@ -22,6 +22,17 @@ pub struct Circuit<'a, E>
 	pub assigned: Option<Assignment<E>>,
 }
 
+impl<'a, E> Clone for Circuit<'a, E>
+	where E: JubjubEngine
+{
+	fn clone(&self) -> Self {
+		Circuit {
+			params: self.params.clone(),
+			assigned: self.assigned.clone(),
+		}
+	}
+}
+
 impl<'a, E> Circuit<'a, E>
 	where E: JubjubEngine,
 {
@@ -65,7 +76,7 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 		// P = (G3^n, K^n)
 		let pubkey_base = ecc::fixed_base_multiplication(
 			cs.namespace(|| "pubkey base point"),
-			FixedGenerators::SpendingKeyGenerator,
+			FixedGenerators::ProofGenerationKey,
 			&nonce_bits,
 			self.params
 		)?;
@@ -90,7 +101,7 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 			)?;
 
 		// Ensure that x coordinate of K is even.
-		let x_bits = k_g3.get_x().into_bits_le_strict(cs.namespace(|| "K x coordinate bits"))?;
+		let x_bits = k_g3.get_x().to_bits_le_strict(cs.namespace(|| "K x coordinate bits"))?;
 
 		boolean::Boolean::enforce_equal(
 			cs.namespace(|| "enforce x coordinate of K is even"),
@@ -98,12 +109,26 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 			&boolean::Boolean::constant(false),
 		)?;
 
-		// TODO: This should not be a public input, it should be a hybrid input.
-		k_g3.get_y().inputize(cs.namespace(|| "K y coordinate hybrid input"));
+		// Input the user_id as a hybrid proof input.
+		let user_id = cs.alloc_hybrid(
+			|| "user id",
+			|| {
+				self.assigned.as_ref()
+					.map(|assigned| assigned.k_g3.to_xy().1)
+					.ok_or(SynthesisError::AssignmentMissing)
+			}
+		)?;
+		cs.enforce(
+			|| "enforce user id is y-coordinate of witness point",
+			|lc| lc + user_id,
+			|lc| lc + CS::one(),
+			|lc| lc + k_g3.get_y().get_variable(),
+		);
 
 		pubkey_base.inputize(cs.namespace(|| "pubkey base input"))?;
 		pubkey_raised.inputize(cs.namespace(|| "pubkey raised input"))?;
-		tracing_pubkey.inputize(cs.namespace(|| "tracing tag input"))?;
+		tracing_pubkey.inputize(cs.namespace(|| "tracing pubkey input"))?;
+		tracing_tag.inputize(cs.namespace(|| "tracing tag input"))?;
 
 		Ok(())
 	}
@@ -112,11 +137,14 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::proofs::tests::certificate_params;
 
 	use bellman::{
 		Circuit as CircuitT,
-		gadgets::test::TestConstraintSystem
+		gadgets::test::TestConstraintSystem, groth16,
 	};
+	use ff::{PrimeField, PrimeFieldRepr, ScalarEngine};
+	use rand::{SeedableRng, rngs::StdRng};
 	use pairing::bls12_381::Bls12;
 	use zcash_primitives::jubjub::{JubjubBls12, JubjubParams};
 
@@ -128,7 +156,7 @@ mod tests {
 			params: &params,
 			assigned: Some(Assignment {
 				nonce: Field::one(),
-				k_g3: params.generator(FixedGenerators::ProofGenerationKey).into(),
+				k_g3: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
 				tracing_pubkey: params.generator(FixedGenerators::NullifierPosition).into(),
 			}),
 		};
@@ -137,5 +165,62 @@ mod tests {
 		circuit.synthesize(&mut cs).unwrap();
 
 		assert_eq!(cs.num_constraints(), 7942);
+	}
+
+	#[test]
+	fn real_groth16_bls12() {
+		let jubjub_params = JubjubBls12::new();
+		let mut rng = StdRng::seed_from_u64(0);
+
+		let generator = jubjub_params.generator(FixedGenerators::ProofGenerationKey);
+		let mut key = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+		let tracing_key = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+		let nonce = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+
+		let mut pubkey = generator.mul(key.into_repr(), &jubjub_params);
+
+		// Ensure sign of x is even.
+		if pubkey.to_xy().0.into_repr().is_odd() {
+			key.negate();
+			pubkey = pubkey.negate();
+		}
+
+		let pubkey_base = generator.mul(nonce.into_repr(), &jubjub_params);
+		let pubkey_raised = pubkey.mul(nonce.into_repr(), &jubjub_params);
+		let tracing_pubkey = generator.mul(tracing_key.into_repr(), &jubjub_params);
+		let tracing_tag = tracing_pubkey
+			.mul(nonce, &jubjub_params)
+			.add(&pubkey, &jubjub_params);
+
+		let (pubkey_x, pubkey_y) = pubkey.to_xy();
+		let (pubkey_base_x, pubkey_base_y) = pubkey_base.to_xy();
+		let (pubkey_raised_x, pubkey_raised_y) = pubkey_raised.to_xy();
+		let (tracing_pubkey_x, tracing_pubkey_y) = tracing_pubkey.to_xy();
+		let (tracing_tag_x, tracing_tag_y) = tracing_tag.to_xy();
+
+		let assignment = Assignment {
+			nonce,
+			k_g3: pubkey.into(),
+			tracing_pubkey: tracing_pubkey.into(),
+		};
+		let circuit = Circuit {
+			params: &jubjub_params,
+			assigned: Some(assignment.clone()),
+		};
+
+		let proof_params = certificate_params().unwrap();
+		let verifying_key = groth16::prepare_verifying_key(&proof_params.vk);
+
+		let q = <Bls12 as ScalarEngine>::Fr::random(&mut rng);
+		let proof = groth16::create_random_proof(circuit, &proof_params, Some(q), &mut rng)
+			.unwrap();
+
+		let public_inputs = [
+			pubkey_base_x, pubkey_base_y,
+			pubkey_raised_x, pubkey_raised_y,
+			tracing_pubkey_x, tracing_pubkey_y,
+			tracing_tag_x, tracing_tag_y,
+		];
+		assert!(groth16::verify_proof(&verifying_key, &proof, &public_inputs[..]).unwrap());
 	}
 }

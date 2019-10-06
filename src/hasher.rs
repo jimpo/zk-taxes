@@ -34,7 +34,7 @@ impl<'a, E> MerkleHasher for PedersenHasher<'a, E>
             BitIterator::new(data),
             &self.params
         );
-        pt.into_xy().0.into_repr()
+        pt.to_xy().0.into_repr()
     }
 
     // Compute the hash of an internal node in the Merkle tree given the child hashes.
@@ -60,7 +60,7 @@ impl<'a, E> MerkleHasher for PedersenHasher<'a, E>
             left_bits.chain(right_bits),
             &self.params
         );
-        pt.into_xy().0.into_repr()
+        pt.to_xy().0.into_repr()
     }
 }
 

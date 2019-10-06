@@ -245,8 +245,8 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 			// they will be unable to find an authentication path in the
 			// tree with high probability.
 			let mut preimage = vec![];
-			preimage.extend(xl.into_bits_le(cs.namespace(|| "xl into bits"))?);
-			preimage.extend(xr.into_bits_le(cs.namespace(|| "xr into bits"))?);
+			preimage.extend(xl.to_bits_le(cs.namespace(|| "xl into bits"))?);
+			preimage.extend(xr.to_bits_le(cs.namespace(|| "xr into bits"))?);
 
 			// Compute the new subtree value.
 			cur = pedersen_hash::pedersen_hash(

@@ -365,7 +365,7 @@ impl<E> UnprovenTransactionInput<E>
 			merkle_depth: MERKLE_DEPTH,
 			assigned: Some(self.proof_assignment),
 		};
-		let proof = create_random_proof(circuit, spend_proof_params, rng)?;
+		let proof = create_random_proof(circuit, spend_proof_params, None, rng)?;
 		Ok(TransactionInput {
 			value_comm: self.value_comm,
 			pubkey: self.pubkey,
