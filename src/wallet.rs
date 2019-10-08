@@ -10,9 +10,10 @@ use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubPar
 
 use crate::constants::MERKLE_DEPTH;
 use crate::hasher::{PedersenHasher, MerkleHasher};
-use crate::proofs::spend;
+use crate::proofs::{range, spend};
 use crate::transaction::{
-	BlockNumber, Coin, Nullifier, Transaction, TransactionInput, TransactionOutput, Value,
+	BlockNumber, Coin, Nullifier, Value,
+	Transaction, TransactionInput, TransactionOutput, TransactionInputBundle,
 };
 use crate::validation;
 use crate::merkle_tree::IncrementalMerkleTree;
@@ -46,7 +47,7 @@ impl<BN> std::error::Error for Error<BN>
 pub struct TransactionDesc<E>
 	where E: Engine + JubjubEngine
 {
-	pub inputs: Vec<TransactionInputDesc<E>>,
+	pub inputs: Vec<TransactionInputBundleDesc<E>>,
 	pub outputs: Vec<TransactionOutputDesc>,
 	pub issuance: i64,
 }
@@ -61,9 +62,130 @@ pub struct TransactionInputDesc<E>
 	pub pubkey_base: edwards::Point<E, Unknown>,
 }
 
+impl<E> TransactionInputDesc<E>
+	where E: JubjubEngine
+{
+	fn build<BN, R>(
+		self,
+		nonce: E::Fs,
+		pubkey_base: &edwards::Point<E, Unknown>,
+		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
+		params: &E::Params,
+		rng: &mut R,
+	)
+		-> Result<UnprovenTransactionInput<E>, Error<BN>>
+		where
+			BN: BlockNumber,
+			R: RngCore,
+	{
+		let nullifier = compute_nullifier::<E>(&self.privkey, self.position);
+		let anchor = E::Fr::from_repr(merkle_tree.root())
+			.map_err(|_| Error::AccumulatorStateInvalid)?;
+		let auth_path = merkle_tree.tracked_branch(self.position)
+			.ok_or_else(|| {
+				Error::ProofSynthesis("could not get auth path for input".to_string())
+			})?;
+		let auth_path = auth_path.iter()
+			.map(|&repr| {
+				E::Fr::from_repr(repr).map_err(|_| {
+					Error::ProofSynthesis("Merkle branch hashes invalid".to_string())
+				})
+			})
+			.collect::<Result<Vec<_>, _>>()?;
+
+		let assignment = spend::Assignment {
+			position: self.position,
+			value: self.value,
+			value_nonce_old: self.value_nonce,
+			value_nonce_new: nonce,
+			privkey: self.privkey,
+			pubkey_base_old: self.pubkey_base,
+			pubkey_base_new: pubkey_base.clone(),
+			nullifier,
+			auth_path,
+			anchor,
+		};
+
+		Ok(UnprovenTransactionInput {
+			value_comm: value_commitment(self.value, &nonce, params).into(),
+			nullifier,
+			proof_assignment: assignment,
+		})
+	}
+}
+
 pub struct TransactionOutputDesc
 {
 	pub value: Value,
+}
+
+pub struct TransactionInputBundleDesc<E>
+	where E: JubjubEngine
+{
+	pub privkey: E::Fs,
+	pub change_value: Value,
+	pub inputs: Vec<TransactionInputDesc<E>>,
+}
+
+impl<E> TransactionInputBundleDesc<E>
+	where E: JubjubEngine
+{
+	fn input_value(&self) -> Option<Value> {
+		self.inputs.iter()
+			.fold(Some(0u64), |sum, input| sum?.checked_add(input.value))
+	}
+
+	fn build<BN, R>(
+		self,
+		nonce_total: E::Fs,
+		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
+		params: &E::Params,
+		rng: &mut R,
+	)
+		-> Result<UnprovenTransactionInputBundle<E>, Error<BN>>
+		where
+			BN: BlockNumber,
+			R: RngCore,
+	{
+		let generator: edwards::Point<E, Unknown> =
+			params.generator(FixedGenerators::ProofGenerationKey).into();
+		let blinding_factor = E::Fs::random(rng);
+		let pubkey_base = generator.mul(blinding_factor.into_repr(), params);
+		let pubkey_raised = pubkey_base.mul(self.privkey.into_repr(), params);
+
+		let mut nonce_output_total = nonce_total.clone();
+		nonce_output_total.negate();
+
+		let (input_nonces, output_nonces) = generate_nonces(
+			self.inputs.len(), 1, nonce_output_total, rng
+		);
+
+		assert_eq!(output_nonces.len(), 1);
+		let change_comm = value_commitment(self.change_value, &output_nonces[0], params);
+
+		let value_total = self.inputs.iter()
+			.fold(Some(0u64), |sum, input| sum?.checked_add(input.value))
+			.and_then(|value_total| value_total.checked_sub(self.change_value))
+			.ok_or(Error::Validation(validation::Error::ValueOverflow))?;
+
+		let inputs = self.inputs.into_iter().zip(input_nonces.into_iter())
+			.map(|(input, nonce)| {
+				input.build(nonce, &pubkey_base, merkle_tree, params, rng)
+			})
+			.collect::<Result<_, _>>()?;
+
+		let assignment = range::Assignment {
+			value: value_total,
+			nonce: nonce_total,
+		};
+
+		Ok(UnprovenTransactionInputBundle {
+			pubkey: (pubkey_base, pubkey_raised),
+			inputs,
+			change_comm: change_comm.into(),
+			proof_assignment: assignment,
+		})
+	}
 }
 
 impl<E> TransactionDesc<E>
@@ -73,11 +195,14 @@ impl<E> TransactionDesc<E>
 		where BN: BlockNumber
 	{
 		let mut input_total = self.inputs.iter()
-			.fold(Some(0u64), |sum, input| sum?.checked_add(input.value))
+			.fold(Some(0u64), |sum, bundle| sum?.checked_add(bundle.input_value()?))
 			.ok_or(Error::Validation(validation::Error::ValueOverflow))?;
+		let change_total = self.inputs.iter()
+			.fold(Some(0u64), |sum, bundle| sum?.checked_add(bundle.change_value));
 		let mut output_total = self.outputs.iter()
-			.fold(Some(0u64), |sum, output| sum?.checked_add(output.value))
+			.fold(change_total, |sum, output| sum?.checked_add(output.value))
 			.ok_or(Error::Validation(validation::Error::ValueOverflow))?;
+
 		if self.issuance.is_positive() {
 			input_total = input_total.checked_add(self.issuance.abs() as u64)
 				.ok_or(Error::Validation(validation::Error::ValueOverflow))?;
@@ -85,38 +210,12 @@ impl<E> TransactionDesc<E>
 			output_total = output_total.checked_add(self.issuance.abs() as u64)
 				.ok_or(Error::Validation(validation::Error::ValueOverflow))?;
 		}
+
 		if input_total != output_total {
 			return Err(Error::Validation(validation::Error::UnbalancedTransaction));
 		}
 
 		Ok(())
-	}
-
-	fn generate_nonces<R>(&self, rng: &mut R) -> (Vec<E::Fs>, Vec<E::Fs>)
-		where R: RngCore
-	{
-		let mut input_nonces = self.inputs.iter()
-			.map(|_| E::Fs::random(rng))
-			.collect::<Vec<_>>();
-		let mut output_nonces = self.outputs.iter()
-			.map(|_| E::Fs::random(rng))
-			.collect::<Vec<_>>();
-
-		let mut nonce_sum = E::Fs::zero();
-		for nonce in input_nonces.iter() {
-			nonce_sum.add_assign(nonce);
-		}
-		for nonce in output_nonces.iter() {
-			nonce_sum.sub_assign(nonce);
-		}
-
-		match (input_nonces.first_mut(), output_nonces.first_mut()) {
-			(Some(nonce), _) => nonce.sub_assign(&nonce_sum),
-			(_, Some(nonce)) => nonce.add_assign(&nonce_sum),
-			_ => {}
-		}
-
-		(input_nonces, output_nonces)
 	}
 
 	pub fn build<'a, BN, R>(
@@ -133,49 +232,12 @@ impl<E> TransactionDesc<E>
 	{
 		self.check_values_balance()?;
 
-		let (input_nonces, output_nonces) = self.generate_nonces(rng);
-		let anchor = E::Fr::from_repr(merkle_tree.root())
-			.map_err(|_| Error::AccumulatorStateInvalid)?;
-
+		let (input_nonces, output_nonces) = generate_nonces(
+			self.inputs.len(), self.outputs.len(), E::Fs::zero(), rng
+		);
 		let inputs = self.inputs.into_iter().zip(input_nonces.into_iter())
-			.map(|(input, nonce)| {
-				let blinding_factor = E::Fs::random(rng);
-				let pubkey_base = input.pubkey_base.mul(blinding_factor.into_repr(), params);
-				let pubkey_raised = pubkey_base.mul(input.privkey.into_repr(), params);
-				let nullifier = compute_nullifier::<E>(&input.privkey, input.position);
-				let auth_path = merkle_tree.tracked_branch(input.position)
-					.ok_or_else(|| {
-						Error::ProofSynthesis("could not get auth path for input".to_string())
-					})?;
-				let auth_path = auth_path.iter()
-					.map(|&repr| {
-						E::Fr::from_repr(repr).map_err(|_| {
-							Error::ProofSynthesis("Merkle branch hashes invalid".to_string())
-						})
-					})
-					.collect::<Result<Vec<_>, _>>()?;
-
-				let assignment = spend::Assignment {
-					position: input.position,
-					value: input.value,
-					value_nonce_old: input.value_nonce,
-					value_nonce_new: nonce,
-					privkey: input.privkey,
-					pubkey_base_old: input.pubkey_base,
-					pubkey_base_new: pubkey_base.clone(),
-					nullifier,
-					auth_path,
-					anchor,
-				};
-
-				Ok(UnprovenTransactionInput {
-					value_comm: value_commitment(input.value, &nonce, params).into(),
-					pubkey: (pubkey_base, pubkey_raised),
-					nullifier,
-					proof_assignment: assignment,
-				})
-			})
-			.collect::<Result<Vec<_>, _>>()?;
+			.map(|(input, nonce)| input.build(nonce, merkle_tree, params, rng))
+			.collect::<Result<_, _>>()?;
 		let outputs = self.outputs.into_iter().zip(output_nonces.into_iter())
 			.map(|(output, nonce)| UnprovenTransactionOutput {
 				value_comm: value_commitment(output.value, &nonce, params).into(),
@@ -210,7 +272,7 @@ pub struct UnprovenTransaction<E, BN>
 		E: JubjubEngine,
 		BN: BlockNumber,
 {
-	pub inputs: Vec<UnprovenTransactionInput<E>>,
+	pub inputs: Vec<UnprovenTransactionInputBundle<E>>,
 	pub outputs: Vec<UnprovenTransactionOutput<E>>,
 	pub issuance: i64,
 
@@ -230,7 +292,7 @@ impl<E, BN> UnprovenTransaction<E, BN>
 	) -> Result<(), &str>
 	{
 		for input in self.inputs.iter() {
-			input.validate_assignment(merkle_tree, params)?;
+			input.validate_assignments(merkle_tree, params)?;
 		}
 		Ok(())
 	}
@@ -241,7 +303,6 @@ pub struct UnprovenTransactionInput<E>
 	where E: JubjubEngine
 {
 	pub value_comm: edwards::Point<E, Unknown>,
-	pub pubkey: (edwards::Point<E, Unknown>, edwards::Point<E, Unknown>),
 	pub nullifier: Nullifier,
 	pub proof_assignment: spend::Assignment<E>,
 }
@@ -251,6 +312,7 @@ impl<E> UnprovenTransactionInput<E>
 {
 	fn validate_assignment(
 		&self,
+		pubkey: &(edwards::Point<E, Unknown>, edwards::Point<E, Unknown>),
 		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
 		params: &<E as JubjubEngine>::Params
 	) -> Result<(), &str>
@@ -271,10 +333,10 @@ impl<E> UnprovenTransactionInput<E>
 		let pubkey_raised_old = assigned.pubkey_base_old.mul(assigned.privkey.into_repr(), params);
 		let pubkey_raised_new = assigned.pubkey_base_new.mul(assigned.privkey.into_repr(), params);
 
-		if self.pubkey.0 != assigned.pubkey_base_new {
+		if pubkey.0 != assigned.pubkey_base_new {
 			return Err("pubkey base point mismatch");
 		}
-		if self.pubkey.1 != pubkey_raised_new {
+		if pubkey.1 != pubkey_raised_new {
 			return Err("pubkey raised point mismatch");
 		}
 
@@ -316,44 +378,7 @@ impl<E> UnprovenTransactionInput<E>
 
 		Ok(())
 	}
-}
 
-pub struct UnprovenTransactionOutput<E>
-	where E: JubjubEngine
-{
-	pub value_comm: edwards::Point<E, Unknown>,
-}
-
-impl<E, BN> UnprovenTransaction<E, BN>
-	where
-		E: JubjubEngine,
-		BN: BlockNumber,
-{
-	pub fn prove<P, R>(self, params: &E::Params, spend_proof_params: P, rng: &mut R)
-		-> Result<Transaction<E, BN>, SynthesisError>
-		where
-			P: ParameterSource<E> + Clone,
-			R: RngCore,
-	{
-		let inputs = self.inputs.into_iter()
-			.map(|input| input.prove(params, spend_proof_params.clone(), rng))
-			.collect::<Result<Vec<_>, SynthesisError>>()?;
-		let outputs = self.outputs.into_iter()
-			.map(|output| output.prove(params, rng))
-			.collect::<Result<Vec<_>, SynthesisError>>()?;
-
-		Ok(Transaction {
-			inputs,
-			outputs,
-			issuance: self.issuance,
-			accumulator_state_block_number: self.accumulator_state_block_number,
-		})
-	}
-}
-
-impl<E> UnprovenTransactionInput<E>
-	where E: JubjubEngine
-{
 	pub fn prove<P, R>(self, params: &E::Params, spend_proof_params: P, rng: &mut R)
 		-> Result<TransactionInput<E>, SynthesisError>
 		where
@@ -368,12 +393,48 @@ impl<E> UnprovenTransactionInput<E>
 		let proof = create_random_proof(circuit, spend_proof_params, None, rng)?;
 		Ok(TransactionInput {
 			value_comm: self.value_comm,
-			pubkey: self.pubkey,
 			nullifier: self.nullifier,
 			proof,
 		})
 	}
+}
 
+pub struct UnprovenTransactionOutput<E>
+	where E: JubjubEngine
+{
+	pub value_comm: edwards::Point<E, Unknown>,
+}
+
+impl<E, BN> UnprovenTransaction<E, BN>
+	where
+		E: JubjubEngine,
+		BN: BlockNumber,
+{
+	pub fn prove<P, R>(
+		self,
+		params: &E::Params,
+		range_proof_params: P,
+		spend_proof_params: P,
+		rng: &mut R,
+	) -> Result<Transaction<E, BN>, SynthesisError>
+		where
+			P: ParameterSource<E> + Clone,
+			R: RngCore,
+	{
+		let inputs = self.inputs.into_iter()
+			.map(|input| input.prove(params, range_proof_params, spend_proof_params.clone(), rng))
+			.collect::<Result<Vec<_>, SynthesisError>>()?;
+		let outputs = self.outputs.into_iter()
+			.map(|output| output.prove(params, rng))
+			.collect::<Result<Vec<_>, SynthesisError>>()?;
+
+		Ok(Transaction {
+			inputs,
+			outputs,
+			issuance: self.issuance,
+			accumulator_state_block_number: self.accumulator_state_block_number,
+		})
+	}
 }
 
 impl<E> UnprovenTransactionOutput<E>
@@ -385,6 +446,63 @@ impl<E> UnprovenTransactionOutput<E>
 	{
 		Ok(TransactionOutput {
 			value_comm: self.value_comm,
+		})
+	}
+}
+
+#[derive(Clone)]
+pub struct UnprovenTransactionInputBundle<E>
+	where E: JubjubEngine
+{
+	pub pubkey: (edwards::Point<E, Unknown>, edwards::Point<E, Unknown>),
+	pub inputs: Vec<UnprovenTransactionInput<E>>,
+	pub change_comm: edwards::Point<E, Unknown>,
+	pub proof_assignment: range::Assignment<E>,
+}
+
+impl<E> UnprovenTransactionInputBundle<E>
+	where E: JubjubEngine
+{
+
+	fn validate_assignments(
+		&self,
+		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
+		params: &<E as JubjubEngine>::Params
+	) -> Result<(), &str>
+	{
+		for input in self.inputs.iter() {
+			input.validate_assignment(&self.pubkey, merkle_tree, params)?;
+		}
+		Ok(())
+	}
+
+	pub fn prove<P, R>(
+		self,
+		params: &E::Params,
+		range_proof_params: P,
+		spend_proof_params: P,
+		rng: &mut R,
+	)
+		-> Result<TransactionInputBundle<E>, SynthesisError>
+		where
+			P: ParameterSource<E> + Clone,
+			R: RngCore,
+	{
+		let inputs = self.inputs.into_iter()
+			.map(|input| input.prove(params, spend_proof_params, rng))
+			.collect::<Result<_, _>>()?;
+
+		let circuit = range::Circuit {
+			params,
+			assigned: Some(self.proof_assignment),
+		};
+		let proof = create_random_proof(circuit, range_proof_params, None, rng)?;
+
+		Ok(TransactionInputBundle {
+			pubkey: self.pubkey,
+			inputs,
+			change_comm: self.change_comm,
+			proof,
 		})
 	}
 }
@@ -420,6 +538,40 @@ fn is_low_order<E>(pt: &edwards::Point<E, Unknown>, params: &E::Params) -> bool
 	where E: JubjubEngine
 {
 	pt.mul_by_cofactor(params) == edwards::Point::zero()
+}
+
+fn generate_nonces<F, R>(n_inputs: usize, n_outputs: usize, output_total: F, rng: &mut R)
+	-> (Vec<F>, Vec<F>)
+	where F: Field,
+		  R: RngCore
+{
+	let mut input_nonces = (0..n_inputs)
+		.map(|_| F::random(rng))
+		.collect::<Vec<_>>();
+	let mut output_nonces = (0..n_outputs)
+		.map(|_| F::random(rng))
+		.collect::<Vec<_>>();
+
+	let mut actual_output_total = F::zero();
+	for nonce in input_nonces.iter() {
+		actual_output_total.add_assign(nonce);
+	}
+	for nonce in output_nonces.iter() {
+		actual_output_total.sub_assign(nonce);
+	}
+
+	let mut output_delta = output_total;
+	output_delta.sub_assign(&actual_output_total);
+
+	if output_delta != F::zero() {
+		match (input_nonces.first_mut(), output_nonces.first_mut()) {
+			(Some(nonce), _) => nonce.sub_assign(&output_delta),
+			(_, Some(nonce)) => nonce.add_assign(&output_delta),
+			_ => panic!("generate_nonces called with 0 inputs, 0 outputs, and non-zero total"),
+		}
+	}
+
+	(input_nonces, output_nonces)
 }
 
 #[cfg(test)]
@@ -513,8 +665,10 @@ mod tests {
 			issuance: 400_000,
 		};
 
-		for input in tx_desc.inputs.iter() {
-			add_input(&mut merkle_tree, input, &params);
+		for bundle_desc in tx_desc.inputs.iter() {
+			for input_desc in bundle_desc.inputs.iter() {
+				add_input(&mut merkle_tree, input_desc, &params);
+			}
 		}
 
 		let tx = tx_desc.build(
@@ -561,8 +715,10 @@ mod tests {
 			issuance: -300_000,
 		};
 
-		for input in tx_desc.inputs.iter() {
-			add_input(&mut merkle_tree, input, &params);
+		for bundle_desc in tx_desc.inputs.iter() {
+			for input_desc in bundle_desc.inputs.iter() {
+				add_input(&mut merkle_tree, input_desc, &params);
+			}
 		}
 
 		let tx = tx_desc.build(
@@ -651,8 +807,10 @@ mod tests {
 			issuance: 0,
 		};
 
-		for input in tx_desc.inputs.iter() {
-			add_input(&mut merkle_tree, input, &params);
+		for bundle_desc in tx_desc.inputs.iter() {
+			for input_desc in bundle_desc.inputs.iter() {
+				add_input(&mut merkle_tree, input_desc, &params);
+			}
 		}
 
 		let err = tx_desc.build(
@@ -739,8 +897,10 @@ mod tests {
 			issuance: 400_000,
 		};
 
-		for input in tx_desc.inputs.iter() {
-			add_input(&mut merkle_tree, input, &params);
+		for bundle_desc in tx_desc.inputs.iter() {
+			for input_desc in bundle_desc.inputs.iter() {
+				add_input(&mut merkle_tree, input_desc, &params);
+			}
 		}
 
 		let proof_params = proofs::tests::spend_params().unwrap();

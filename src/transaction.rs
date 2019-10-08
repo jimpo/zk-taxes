@@ -15,7 +15,7 @@ impl BlockNumber for u64 {}
 pub struct Transaction<E, BN>
 	where E: JubjubEngine
 {
-	pub inputs: Vec<TransactionInput<E>>,
+	pub inputs: Vec<TransactionInputBundle<E>>,
 	pub outputs: Vec<TransactionOutput<E>>,
 	pub issuance: i64,
 
@@ -34,7 +34,7 @@ impl<E, BN> Transaction<E, BN>
 				io::Error::new(io::ErrorKind::InvalidData, "failed to decode inputs length")
 			})?;
 		let inputs = (0..inputs_length.0)
-			.map(|_| <TransactionInput<E>>::read(&mut reader, params))
+			.map(|_| <TransactionInputBundle<E>>::read(&mut reader, params))
 			.collect::<Result<_, _>>()?;
 
 		let outputs_length = <Compact<u32>>::decode(&mut reader)
@@ -85,7 +85,6 @@ pub struct TransactionInput<E>
 	where E: JubjubEngine
 {
 	pub value_comm: edwards::Point<E, Unknown>,
-	pub pubkey: (edwards::Point<E, Unknown>, edwards::Point<E, Unknown>),
 	pub nullifier: Nullifier,
 	pub proof: Proof<E>,
 }
@@ -95,17 +94,12 @@ impl<E> TransactionInput<E>
 {
 	pub fn read<R: Read>(mut reader: R, params: &E::Params) -> io::Result<Self> {
 		let value_comm = <edwards::Point<E, Unknown>>::read(&mut reader, params)?;
-		let pubkey = (
-			<edwards::Point<E, Unknown>>::read(&mut reader, params)?,
-			<edwards::Point<E, Unknown>>::read(&mut reader, params)?
-		);
 		let mut nullifier = Nullifier::default();
 		reader.read(&mut nullifier[..])?;
 		let proof = <Proof<E>>::read(&mut reader)?;
 
 		Ok(TransactionInput {
 			value_comm,
-			pubkey,
 			nullifier,
 			proof,
 		})
@@ -113,8 +107,6 @@ impl<E> TransactionInput<E>
 
 	pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
 		self.value_comm.write(&mut writer)?;
-		self.pubkey.0.write(&mut writer)?;
-		self.pubkey.1.write(&mut writer)?;
 		self.nullifier.encode_to(&mut writer);
 		self.proof.write(&mut writer)?;
 		Ok(())
@@ -162,6 +154,59 @@ impl<E> TransactionOutput<E>
 			value_comm: self.value_comm,
 			pubkey: (edwards::Point::zero(), edwards::Point::zero()),
 		}
+	}
+}
+
+#[derive(PartialEq, Clone)]
+pub struct TransactionInputBundle<E>
+	where E: JubjubEngine
+{
+	pub pubkey: (edwards::Point<E, Unknown>, edwards::Point<E, Unknown>),
+	pub inputs: Vec<TransactionInput<E>>,
+	pub change_comm: edwards::Point<E, Unknown>,
+	pub proof: Proof<E>,
+}
+
+impl<E> TransactionInputBundle<E>
+	where E: JubjubEngine
+{
+	pub fn read<R: Read>(mut reader: R, params: &E::Params) -> io::Result<Self> {
+		let pubkey = (
+			<edwards::Point<E, Unknown>>::read(&mut reader, params)?,
+			<edwards::Point<E, Unknown>>::read(&mut reader, params)?
+		);
+
+		let inputs_length = <Compact<u32>>::decode(&mut reader)
+			.ok_or_else(|| {
+				io::Error::new(io::ErrorKind::InvalidData, "failed to decode inputs length")
+			})?;
+		let inputs = (0..inputs_length.0)
+			.map(|_| <TransactionInput<E>>::read(&mut reader, params))
+			.collect::<Result<_, _>>()?;
+
+		let change_comm = <edwards::Point<E, Unknown>>::read(&mut reader, params)?;
+		let proof = <Proof<E>>::read(&mut reader)?;
+
+		Ok(TransactionInputBundle {
+			pubkey,
+			inputs,
+			change_comm,
+			proof,
+		})
+	}
+
+	pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
+		self.pubkey.0.write(&mut writer)?;
+		self.pubkey.1.write(&mut writer)?;
+
+		Compact(self.inputs.len() as u32).encode_to(&mut writer);
+		for input in self.inputs.iter() {
+			input.write(&mut writer)?;
+		}
+
+		self.change_comm.write(&mut writer)?;
+		self.proof.write(&mut writer)?;
+		Ok(())
 	}
 }
 

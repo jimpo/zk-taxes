@@ -69,7 +69,7 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 		// Witness the nonce as a bit vector.
 		let nonce_bits = boolean::field_into_boolean_vec_le(
 			cs.namespace(|| "nonce"),
-			self.assigned.as_ref().map(|assigned| assigned.nonce.clone())
+			self.get_assigned(|assigned| assigned.nonce.clone())
 		)?;
 
 		// Compute the pubkey from the generator, K, and the nonce.
@@ -113,8 +113,7 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 		let user_id = cs.alloc_hybrid(
 			|| "user id",
 			|| {
-				self.assigned.as_ref()
-					.map(|assigned| assigned.k_g3.to_xy().1)
+				self.get_assigned(|assigned| assigned.k_g3.to_xy().1)
 					.ok_or(SynthesisError::AssignmentMissing)
 			}
 		)?;

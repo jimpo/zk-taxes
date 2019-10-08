@@ -101,7 +101,7 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 		// because it doesn't matter for security.
 		let value_nonce_old_bits = boolean::field_into_boolean_vec_le(
 			cs.namespace(|| "old value nonce"),
-			self.assigned.as_ref().map(|assigned| assigned.value_nonce_old.clone())
+			self.get_assigned(|assigned| assigned.value_nonce_old.clone())
 		)?;
 
 		// Compute the randomness in the exponent.

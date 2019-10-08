@@ -104,6 +104,7 @@ fn check_transaction<E, CS, BN>(
 
 	// Check that nullifiers are valid.
 	let mut nullifiers = transaction.inputs.iter()
+		.flat_map(|bundle| bundle.inputs.iter())
 		.map(|input| input.nullifier)
 		.enumerate()
 		.collect::<Vec<_>>();
