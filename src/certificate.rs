@@ -7,6 +7,7 @@ use ff::{BitIterator, Field, PrimeField, PrimeFieldRepr};
 use group::{CurveAffine, CurveProjective};
 use rand::{CryptoRng, RngCore};
 use std::fmt::{self, Display, Formatter};
+use std::rc::Rc;
 use zcash_primitives::jubjub::{
 	edwards, FixedGenerators, JubjubEngine, PrimeOrder, JubjubParams, Unknown,
 };
@@ -43,7 +44,7 @@ pub struct PublicParams<E>
 	where E: JubjubEngine
 {
 	challenge_domain: &'static [u8],
-	jubjub_params: E::Params,
+	jubjub_params: Rc<E::Params>,
 	proof_params: groth16::Parameters<E>,
 	verifying_key: groth16::PreparedVerifyingKey<E>,
 	generator: FixedGenerators,
@@ -55,7 +56,7 @@ pub struct PublicParams<E>
 impl<E> PublicParams<E>
 	where E: JubjubEngine
 {
-	fn new(jubjub_params: E::Params, proof_params: groth16::Parameters<E>) -> Self {
+	pub fn new(jubjub_params: Rc<E::Params>, proof_params: groth16::Parameters<E>) -> Self {
 		let verifying_key = groth16::prepare_verifying_key(&proof_params.vk);
 		let generator = FixedGenerators::ProofGenerationKey;
 		let g1 = E::G1Affine::one();
@@ -71,6 +72,10 @@ impl<E> PublicParams<E>
 			g2,
 			g3,
 		}
+	}
+
+	pub fn jubjub_params(&self) -> &E::Params {
+		self.jubjub_params.as_ref()
 	}
 }
 
@@ -154,7 +159,7 @@ pub fn gen_user_key<E, R>(rng: &mut R, params: &PublicParams<E>) -> UserKey<E>
 		R: RngCore + CryptoRng,
 {
 	let mut k = E::Fs::random(rng);
-	let mut k_g3 = params.g3.mul(k, &params.jubjub_params);
+	let mut k_g3 = params.g3.mul(k, params.jubjub_params());
 
 	// Ensure sign of x is even.
 	let (x, _y) = k_g3.to_xy();
@@ -184,7 +189,7 @@ pub fn gen_authority_key<E, R>(rng: &mut R, params: &PublicParams<E>) -> Authori
 		pubkey: AuthorityPublicKey {
 			x_g2: params.g2.mul(x),
 			y_g2: params.g2.mul(y),
-			t_g3: params.g3.mul(t, &params.jubjub_params).into(),
+			t_g3: params.g3.mul(t, params.jubjub_params()).into(),
 		}
 	}
 }
@@ -206,7 +211,7 @@ pub fn issue_credential<E, R>(
 		E: JubjubEngine,
 		R: RngCore + CryptoRng,
 {
-	let k_g3 = edwards::Point::get_for_y(id, false, &params.jubjub_params)
+	let k_g3 = edwards::Point::get_for_y(id, false, params.jubjub_params())
 		.ok_or(Error::InvalidID)?;
 
 	// U = G1^u
@@ -316,7 +321,7 @@ pub fn issue_certificate<E, R>(
 
 	// Create zk-SNARK proof.
 	let circuit = certificate_proof::Circuit {
-		params: &params.jubjub_params,
+		params: params.jubjub_params(),
 		assigned: Some(certificate_proof::Assignment {
 			nonce: n,
 			k_g3: credential.k_g3.clone(),
@@ -342,14 +347,14 @@ pub fn issue_certificate<E, R>(
 
 	// P = (G3^n, K^n)
 	let p_g3 = (
-		params.g3.mul(n, &params.jubjub_params).into(),
-		credential.k_g3.mul(n, &params.jubjub_params).into(),
+		params.g3.mul(n, params.jubjub_params()).into(),
+		credential.k_g3.mul(n, params.jubjub_params()).into(),
 	);
 
 	// τ = K * T^n
 	let tau_g3 = authority_pubkey.t_g3
-		.mul(n, &params.jubjub_params)
-		.add(&credential.k_g3, &params.jubjub_params);
+		.mul(n, params.jubjub_params())
+		.add(&credential.k_g3, params.jubjub_params());
 
 	// Sigma proof nonces
 	let r_id = E::Fr::random(rng);
@@ -523,8 +528,8 @@ pub fn trace_certificate<E>(
 	neg_t.negate();
 
 	let k_g3 = cert.pk.0
-		.mul(neg_t, &params.jubjub_params)
-		.add(&cert.tau, &params.jubjub_params);
+		.mul(neg_t, params.jubjub_params())
+		.add(&cert.tau, params.jubjub_params());
 
 	k_g3.to_xy().1
 }
@@ -565,7 +570,7 @@ mod tests {
 
 	#[test]
 	fn end_to_end() {
-		let jubjub_params = JubjubBls12::new();
+		let jubjub_params = Rc::new(JubjubBls12::new());
 		let proof_params = proofs::tests::certificate_params().unwrap();
 		let params = PublicParams::new(jubjub_params, proof_params);
 		let mut rng = StdRng::seed_from_u64(0);

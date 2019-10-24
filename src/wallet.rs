@@ -20,17 +20,13 @@ use crate::merkle_tree::IncrementalMerkleTree;
 use bellman::SynthesisError;
 
 #[derive(Debug, PartialEq)]
-pub enum Error<BN>
-	where BN: BlockNumber,
-{
-	Validation(validation::Error<BN>),
+pub enum Error {
+	Validation(validation::Error),
 	AccumulatorStateInvalid,
 	ProofSynthesis(String),
 }
 
-impl<BN> Display for Error<BN>
-	where BN: BlockNumber
-{
+impl Display for Error {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
 		match self {
 			Error::Validation(e) => write!(f, "invalid transaction: {}", e),
@@ -40,9 +36,7 @@ impl<BN> Display for Error<BN>
 	}
 }
 
-impl<BN> std::error::Error for Error<BN>
-	where BN: BlockNumber
-{}
+impl std::error::Error for Error {}
 
 pub struct TransactionDesc<E>
 	where E: Engine + JubjubEngine
@@ -64,7 +58,7 @@ pub struct TransactionInputDesc<E>
 impl<E> TransactionInputDesc<E>
 	where E: JubjubEngine
 {
-	fn build<BN>(
+	fn build(
 		self,
 		nonce: E::Fs,
 		privkey: &E::Fs,
@@ -72,9 +66,7 @@ impl<E> TransactionInputDesc<E>
 		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
 		params: &E::Params,
 	)
-		-> Result<UnprovenTransactionInput<E>, Error<BN>>
-		where
-			BN: BlockNumber,
+		-> Result<UnprovenTransactionInput<E>, Error>
 	{
 		let nullifier = compute_nullifier::<E>(privkey, self.position);
 		let anchor = E::Fr::from_repr(merkle_tree.root())
@@ -133,17 +125,15 @@ impl<E> TransactionInputBundleDesc<E>
 			.fold(Some(0u64), |sum, input| sum?.checked_add(input.value))
 	}
 
-	fn build<BN, R>(
+	fn build<R>(
 		self,
 		nonce_total: E::Fs,
 		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
 		params: &E::Params,
 		rng: &mut R,
 	)
-		-> Result<UnprovenTransactionInputBundle<E>, Error<BN>>
-		where
-			BN: BlockNumber,
-			R: RngCore,
+		-> Result<UnprovenTransactionInputBundle<E>, Error>
+		where R: RngCore,
 	{
 		let generator: edwards::Point<E, Unknown> =
 			params.generator(FixedGenerators::ProofGenerationKey).into();
@@ -188,9 +178,7 @@ impl<E> TransactionInputBundleDesc<E>
 impl<E> TransactionDesc<E>
 	where E: JubjubEngine
 {
-	fn check_values_balance<BN>(&self) -> Result<(), Error<BN>>
-		where BN: BlockNumber
-	{
+	fn check_values_balance(&self) -> Result<(), Error> {
 		let mut input_total = self.inputs.iter()
 			.fold(Some(0u64), |sum, bundle| sum?.checked_add(bundle.input_value()?))
 			.ok_or(Error::Validation(validation::Error::ValueOverflow))?;
@@ -222,7 +210,7 @@ impl<E> TransactionDesc<E>
 		params: &'a <E as JubjubEngine>::Params,
 		rng: &'a mut R,
 	)
-		-> Result<UnprovenTransaction<E, BN>, Error<BN>>
+		-> Result<UnprovenTransaction<E, BN>, Error>
 		where
 			BN: BlockNumber,
 			R: RngCore,
