@@ -5,9 +5,13 @@ use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
 use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown};
 
-use crate::certificate;
+use crate::certificate::{
+	AuthorityPublicKey, Error as CertificateError, PublicParams as CertificateParams,
+	verify_certificate,
+};
 use crate::transaction::{
-	BlockNumber, Nullifier, Transaction, TransactionInputBundle, TransactionInput,
+	BlockNumber, Nullifier,
+	Transaction, TransactionInputBundle, TransactionInput, TransactionOutput,
 };
 
 #[derive(Debug, PartialEq)]
@@ -18,6 +22,7 @@ pub enum Error {
 	InvalidAccumulatorState,
 	DoubleSpend(usize),
 	ProofSynthesis(String),
+	CertificateVerificationError(String),
 	InvalidCertificate { output_index: usize },
 	InvalidRangeProof { bundle_index: usize },
 	InvalidSpendProof { bundle_index: usize, input_index: usize }
@@ -37,6 +42,8 @@ impl Display for Error {
 				write!(f, "input at index {} is already spent", index),
 			Error::ProofSynthesis(reason) =>
 				write!(f, "unexpected bellman error verifying proof: {}", reason),
+			Error::ProofSynthesis(reason) =>
+				write!(f, "unexpected error verifying certificate: {}", reason),
 			Error::InvalidCertificate { output_index } =>
 				write!(f, "traceable anonymous certificate on output {} is invalid", output_index),
 			Error::InvalidRangeProof { bundle_index } =>
@@ -69,7 +76,8 @@ pub struct PublicParams<E>
 	where E: JubjubEngine
 {
 	jubjub_params: Rc<E::Params>,
-	certificate_params: certificate::PublicParams<E>,
+	authority_pubkey: AuthorityPublicKey<E>,
+	certificate_params: CertificateParams<E>,
 	range_proof_params: groth16::Parameters<E>,
 	range_verifying_key: groth16::PreparedVerifyingKey<E>,
 	spend_proof_params: groth16::Parameters<E>,
@@ -81,12 +89,13 @@ impl<E> PublicParams<E>
 {
 	pub fn new(
 		jubjub_params: Rc<E::Params>,
+		authority_pubkey: AuthorityPublicKey<E>,
 		certificate_proof_params: groth16::Parameters<E>,
 		range_proof_params: groth16::Parameters<E>,
 		spend_proof_params: groth16::Parameters<E>,
 	) -> Self
 	{
-		let certificate_params = certificate::PublicParams::new(
+		let certificate_params = CertificateParams::new(
 			jubjub_params.clone(),
 			certificate_proof_params,
 		);
@@ -94,6 +103,7 @@ impl<E> PublicParams<E>
 		let spend_verifying_key = groth16::prepare_verifying_key(&spend_proof_params.vk);
 		PublicParams {
 			jubjub_params,
+			authority_pubkey,
 			certificate_params,
 			range_proof_params,
 			range_verifying_key,
@@ -114,7 +124,7 @@ impl<E> PublicParams<E>
 		&self.spend_proof_params
 	}
 
-	pub fn certificate_params(&self) -> &certificate::PublicParams<E> {
+	pub fn certificate_params(&self) -> &CertificateParams<E> {
 		&self.certificate_params
 	}
 }
@@ -140,6 +150,9 @@ pub fn check_transaction<E, CS, BN>(
 				params, accumulator_state, bundle_index, bundle, input_index, input
 			)?;
 		}
+	}
+	for (output_index, output) in transaction.outputs.iter().enumerate() {
+		check_output_certificate(params, output_index, output)?;
 	}
 
 	let input_commitments = transaction.inputs.iter()
@@ -256,5 +269,26 @@ fn check_input_spend_proof<E>(
 		Ok(())
 	} else {
 		Err(Error::InvalidSpendProof { bundle_index, input_index })
+	}
+}
+
+fn check_output_certificate<E>(
+	params: &PublicParams<E>,
+	output_index: usize,
+	output: &TransactionOutput<E>,
+) -> Result<(), Error>
+	where E: JubjubEngine
+{
+	let valid = verify_certificate(
+		params.certificate_params(), &params.authority_pubkey, output.certificate
+	)
+		.map_err(|err| match err {
+			CertificateError::ProofSynthesis(e) => Error::ProofSynthesis(e.to_string()),
+			_ => Error::CertificateVerificationError(err.to_string()),
+		})?;
+	if valid {
+		Ok(())
+	} else {
+		Err(Error::InvalidCertificate { output_index })
 	}
 }

@@ -159,7 +159,7 @@ pub fn gen_user_key<E, R>(rng: &mut R, params: &PublicParams<E>) -> UserKey<E>
 		R: RngCore + CryptoRng,
 {
 	let mut k = E::Fs::random(rng);
-	let mut k_g3 = params.g3.mul(k, params.jubjub_params());
+	let mut k_g3 = params.g3.mul(k, &params.jubjub_params);
 
 	// Ensure sign of x is even.
 	let (x, _y) = k_g3.to_xy();
@@ -189,7 +189,7 @@ pub fn gen_authority_key<E, R>(rng: &mut R, params: &PublicParams<E>) -> Authori
 		pubkey: AuthorityPublicKey {
 			x_g2: params.g2.mul(x),
 			y_g2: params.g2.mul(y),
-			t_g3: params.g3.mul(t, params.jubjub_params()).into(),
+			t_g3: params.g3.mul(t, &params.jubjub_params).into(),
 		}
 	}
 }
@@ -529,7 +529,7 @@ pub fn trace_certificate<E>(
 
 	let k_g3 = cert.pk.0
 		.mul(neg_t, params.jubjub_params())
-		.add(&cert.tau, params.jubjub_params());
+		.add(&cert.tau, &params.jubjub_params);
 
 	k_g3.to_xy().1
 }
