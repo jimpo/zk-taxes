@@ -2,7 +2,6 @@ use bellman::{
 	self, ConstraintSystem, SynthesisError,
 	gadgets::boolean,
 };
-use ff::Field;
 use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, Unknown};
 use zcash_proofs::circuit::ecc;
 
@@ -142,7 +141,7 @@ mod tests {
 		Circuit as CircuitT,
 		gadgets::test::TestConstraintSystem, groth16,
 	};
-	use ff::{PrimeField, PrimeFieldRepr, ScalarEngine};
+	use ff::{Field, PrimeField, PrimeFieldRepr, ScalarEngine};
 	use rand::{SeedableRng, rngs::StdRng};
 	use pairing::bls12_381::Bls12;
 	use zcash_primitives::jubjub::{JubjubBls12, JubjubParams};
@@ -163,7 +162,7 @@ mod tests {
 		let mut cs = TestConstraintSystem::<Bls12>::new();
 		circuit.synthesize(&mut cs).unwrap();
 
-		assert_eq!(cs.num_constraints(), 7942);
+		assert_eq!(cs.num_constraints(), 7944);
 	}
 
 	#[test]

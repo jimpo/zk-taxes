@@ -1,7 +1,7 @@
 use crate::transaction::Value;
 
-use bellman::{self, SynthesisError, ConstraintSystem, gadgets::{boolean, num}};
-use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, Unknown};
+use bellman::{self, SynthesisError, ConstraintSystem, gadgets::boolean};
+use zcash_primitives::jubjub::{FixedGenerators, JubjubEngine};
 use zcash_proofs::circuit::ecc;
 
 #[derive(Clone)]
@@ -111,6 +111,6 @@ mod tests {
 		let mut cs = TestConstraintSystem::<Bls12>::new();
 		circuit.synthesize(&mut cs).unwrap();
 
-		assert_eq!(cs.num_constraints(), 7942);
+		assert_eq!(cs.num_constraints(), 1265);
 	}
 }

@@ -439,15 +439,13 @@ fn compute_challenge<E>(
 *
 * then checks that \hat c = c.
 */
-pub fn verify_certificate<E, R>(
-	rng: &mut R,
+pub fn verify_certificate<E>(
 	params: &PublicParams<E>,
 	authority_pubkey: &AuthorityPublicKey<E>,
 	cert: &AnonymousCertificate<E>,
 ) -> Result<bool, Error>
 	where
 		E: JubjubEngine,
-		R: RngCore + CryptoRng,
 {
 	let d_g1 = match cert.proof.d {
 		Some(d_g1) => d_g1,
@@ -582,7 +580,6 @@ mod tests {
 		let certificate = issue_certificate(&mut rng, &params, &authority_key.pubkey, &credential)
 			.unwrap();
 		assert!(verify_certificate(
-			&mut rng,
 			&params,
 			&authority_key.pubkey,
 			&certificate,

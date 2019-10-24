@@ -321,41 +321,32 @@ mod tests {
 		gadgets::test::TestConstraintSystem
 	};
 	use pairing::bls12_381::Bls12;
-	use zcash_primitives::jubjub::JubjubBls12;
+	use zcash_primitives::jubjub::{JubjubBls12, JubjubParams};
 
 	#[test]
-	fn print_circuit_sizes() {
-		fn count_constraints(
-			n_inputs: usize,
-			n_outputs: usize,
-			n_kernels: usize,
-			params: &JubjubBls12
-		) -> usize
-		{
-			let transaction = Circuit::without_assignment(params, MERKLE_DEPTH);
+	fn circuit_size() {
+		let params = JubjubBls12::new();
 
-			let mut cs = TestConstraintSystem::<Bls12>::new();
-			transaction.synthesize(&mut cs).unwrap();
-			cs.num_constraints()
-		}
+		let circuit = Circuit {
+			params: &params,
+			merkle_depth: MERKLE_DEPTH,
+			assigned: Some(Assignment {
+				position: 0,
+				value: 0,
+				value_nonce_old: Field::one(),
+				value_nonce_new: Field::one(),
+				privkey: Field::one(),
+				pubkey_base_old: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+				pubkey_base_new: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+				nullifier: Nullifier::default(),
+				auth_path: vec![Field::one(); MERKLE_DEPTH],
+				anchor: Field::one(),
+			}),
+		};
 
-		let params = &JubjubBls12::new();
+		let mut cs = TestConstraintSystem::<Bls12>::new();
+		circuit.synthesize(&mut cs).unwrap();
 
-		let combinations = [
-			(0, 0, 0),
-			(1, 0, 0),
-			(100, 0, 0),
-			(1, 0, 0),
-			(0, 100, 0),
-			(0, 0, 1),
-			(0, 0, 10),
-		];
-		for (n_inputs, n_outputs, n_kernels) in combinations.iter() {
-			let constraints = count_constraints(*n_inputs, *n_outputs, *n_kernels, params);
-			println!(
-				"inputs: {}, outputs: {}, kernels: {}, constraints: {}",
-				*n_inputs, *n_outputs, *n_kernels, constraints
-			)
-		}
+		assert_eq!(cs.num_constraints(), 78109);
 	}
 }

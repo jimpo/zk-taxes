@@ -58,27 +58,25 @@ pub struct TransactionInputDesc<E>
 	pub position: u64,
 	pub value: Value,
 	pub value_nonce: E::Fs,
-	pub privkey: E::Fs,
 	pub pubkey_base: edwards::Point<E, Unknown>,
 }
 
 impl<E> TransactionInputDesc<E>
 	where E: JubjubEngine
 {
-	fn build<BN, R>(
+	fn build<BN>(
 		self,
 		nonce: E::Fs,
+		privkey: &E::Fs,
 		pubkey_base: &edwards::Point<E, Unknown>,
 		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E>>,
 		params: &E::Params,
-		rng: &mut R,
 	)
 		-> Result<UnprovenTransactionInput<E>, Error<BN>>
 		where
 			BN: BlockNumber,
-			R: RngCore,
 	{
-		let nullifier = compute_nullifier::<E>(&self.privkey, self.position);
+		let nullifier = compute_nullifier::<E>(privkey, self.position);
 		let anchor = E::Fr::from_repr(merkle_tree.root())
 			.map_err(|_| Error::AccumulatorStateInvalid)?;
 		let auth_path = merkle_tree.tracked_branch(self.position)
@@ -98,7 +96,7 @@ impl<E> TransactionInputDesc<E>
 			value: self.value,
 			value_nonce_old: self.value_nonce,
 			value_nonce_new: nonce,
-			privkey: self.privkey,
+			privkey: privkey.clone(),
 			pubkey_base_old: self.pubkey_base,
 			pubkey_base_new: pubkey_base.clone(),
 			nullifier,
@@ -168,10 +166,9 @@ impl<E> TransactionInputBundleDesc<E>
 			.and_then(|value_total| value_total.checked_sub(self.change_value))
 			.ok_or(Error::Validation(validation::Error::ValueOverflow))?;
 
+		let privkey = &self.privkey;
 		let inputs = self.inputs.into_iter().zip(input_nonces.into_iter())
-			.map(|(input, nonce)| {
-				input.build(nonce, &pubkey_base, merkle_tree, params, rng)
-			})
+			.map(|(input, nonce)| input.build(nonce, privkey, &pubkey_base, merkle_tree, params))
 			.collect::<Result<_, _>>()?;
 
 		let assignment = range::Assignment {
@@ -256,9 +253,9 @@ impl<E> TransactionDesc<E>
 impl<E> TransactionInputDesc<E>
 	where E: JubjubEngine
 {
-	pub fn coin(&self, params: &E::Params) -> Coin<E> {
+	pub fn coin(&self, privkey: &E::Fs, params: &E::Params) -> Coin<E> {
 		let pubkey_base_point = self.pubkey_base.clone();
-		let pubkey_raised_point = pubkey_base_point.mul(self.privkey.into_repr(), params);
+		let pubkey_raised_point = pubkey_base_point.mul(privkey.into_repr(), params);
 		Coin {
 			position: self.position,
 			value_comm: value_commitment(self.value, &self.value_nonce, params).into(),
@@ -418,11 +415,11 @@ impl<E, BN> UnprovenTransaction<E, BN>
 		rng: &mut R,
 	) -> Result<Transaction<E, BN>, SynthesisError>
 		where
-			P: ParameterSource<E> + Clone,
+			P: ParameterSource<E> + Copy,
 			R: RngCore,
 	{
 		let inputs = self.inputs.into_iter()
-			.map(|input| input.prove(params, range_proof_params, spend_proof_params.clone(), rng))
+			.map(|input| input.prove(params, range_proof_params, spend_proof_params, rng))
 			.collect::<Result<Vec<_>, SynthesisError>>()?;
 		let outputs = self.outputs.into_iter()
 			.map(|output| output.prove(params, rng))
@@ -485,7 +482,7 @@ impl<E> UnprovenTransactionInputBundle<E>
 	)
 		-> Result<TransactionInputBundle<E>, SynthesisError>
 		where
-			P: ParameterSource<E> + Clone,
+			P: ParameterSource<E> + Copy,
 			R: RngCore,
 	{
 		let inputs = self.inputs.into_iter()
@@ -588,15 +585,40 @@ mod tests {
 	fn add_input<E>(
 		merkle_tree: &mut IncrementalMerkleTree<PedersenHasher<E>>,
 		input: &TransactionInputDesc<E>,
+		privkey: &E::Fs,
 		params: &E::Params,
 	)
 		where E: JubjubEngine
 	{
 		let mut encoded_coin = Vec::new();
-		input.coin(params).write(&mut encoded_coin).unwrap();
+		input.coin(privkey, params).write(&mut encoded_coin).unwrap();
 
 		merkle_tree.track_next_leaf();
 		merkle_tree.push_data(&encoded_coin);
+	}
+
+	fn add_bundle_inputs<E>(
+		merkle_tree: &mut IncrementalMerkleTree<PedersenHasher<E>>,
+		bundle_desc: &TransactionInputBundleDesc<E>,
+		params: &E::Params,
+	)
+		where E: JubjubEngine
+	{
+		for input_desc in bundle_desc.inputs.iter() {
+			add_input(merkle_tree, input_desc, &bundle_desc.privkey, params);
+		}
+	}
+
+	fn add_transaction_inputs<E>(
+		merkle_tree: &mut IncrementalMerkleTree<PedersenHasher<E>>,
+		tx_desc: &TransactionDesc<E>,
+		params: &E::Params,
+	)
+		where E: JubjubEngine
+	{
+		for bundle_desc in tx_desc.inputs.iter() {
+			add_bundle_inputs(merkle_tree, bundle_desc, &params);
+		}
 	}
 
 	#[test]
@@ -639,20 +661,24 @@ mod tests {
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
-				TransactionInputDesc {
-					position: 0,
-					value: 100_000,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+				TransactionInputBundleDesc {
 					privkey: <Bls12 as JubjubEngine>::Fs::one(),
-					pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
-				},
-				TransactionInputDesc {
-					position: 1,
-					value: 200_000,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
-					privkey: <Bls12 as JubjubEngine>::Fs::one(),
-					pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
-				},
+					change_value: 0,
+					inputs: vec![
+						TransactionInputDesc {
+							position: 0,
+							value: 100_000,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+						},
+						TransactionInputDesc {
+							position: 1,
+							value: 200_000,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+						},
+					]
+				}
 			],
 			outputs: vec![
 				TransactionOutputDesc {
@@ -665,11 +691,7 @@ mod tests {
 			issuance: 400_000,
 		};
 
-		for bundle_desc in tx_desc.inputs.iter() {
-			for input_desc in bundle_desc.inputs.iter() {
-				add_input(&mut merkle_tree, input_desc, &params);
-			}
-		}
+		add_transaction_inputs(&mut merkle_tree, &tx_desc, &params);
 
 		let tx = tx_desc.build(
 			block_number,
@@ -679,7 +701,8 @@ mod tests {
 		).unwrap();
 
 		tx.validate_assignments(&merkle_tree, &params).unwrap();
-		assert_eq!(tx.inputs.len(), 2);
+		assert_eq!(tx.inputs.len(), 1);
+		assert_eq!(tx.inputs[0].inputs.len(), 2);
 		assert_eq!(tx.outputs.len(), 2);
 		assert_eq!(tx.issuance, 400_000);
 		assert_eq!(tx.accumulator_state_block_number, block_number);
@@ -696,30 +719,30 @@ mod tests {
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
-				TransactionInputDesc {
-					position: 0,
-					value: 100_000,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+				TransactionInputBundleDesc {
 					privkey: <Bls12 as JubjubEngine>::Fs::one(),
-					pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
-				},
-				TransactionInputDesc {
-					position: 1,
-					value: 200_000,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
-					privkey: <Bls12 as JubjubEngine>::Fs::one(),
-					pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+					change_value: 0,
+					inputs: vec![
+						TransactionInputDesc {
+							position: 0,
+							value: 100_000,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+						},
+						TransactionInputDesc {
+							position: 1,
+							value: 200_000,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+						},
+					]
 				},
 			],
 			outputs: vec![],
 			issuance: -300_000,
 		};
 
-		for bundle_desc in tx_desc.inputs.iter() {
-			for input_desc in bundle_desc.inputs.iter() {
-				add_input(&mut merkle_tree, input_desc, &params);
-			}
-		}
+		add_transaction_inputs(&mut merkle_tree, &tx_desc, &params);
 
 		let tx = tx_desc.build(
 			block_number,
@@ -729,7 +752,8 @@ mod tests {
 		).unwrap();
 
 		tx.validate_assignments(&merkle_tree, &params).unwrap();
-		assert_eq!(tx.inputs.len(), 2);
+		assert_eq!(tx.inputs.len(), 1);
+		assert_eq!(tx.inputs[0].inputs.len(), 2);
 		assert_eq!(tx.outputs.len(), 0);
 		assert_eq!(tx.issuance, -300_000);
 		assert_eq!(tx.accumulator_state_block_number, block_number);
@@ -781,19 +805,23 @@ mod tests {
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
-				TransactionInputDesc {
-					position: 0,
-					value: std::u64::MAX,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+				TransactionInputBundleDesc {
 					privkey: <Bls12 as JubjubEngine>::Fs::zero(),
-					pubkey_base: edwards::Point::zero(),
-				},
-				TransactionInputDesc {
-					position: 1,
-					value: std::u64::MAX,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
-					privkey: <Bls12 as JubjubEngine>::Fs::zero(),
-					pubkey_base: edwards::Point::zero(),
+					change_value: 0,
+					inputs: vec![
+						TransactionInputDesc {
+							position: 0,
+							value: std::u64::MAX,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: edwards::Point::zero(),
+						},
+						TransactionInputDesc {
+							position: 1,
+							value: std::u64::MAX,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: edwards::Point::zero(),
+						},
+					],
 				},
 			],
 			outputs: vec![
@@ -807,11 +835,7 @@ mod tests {
 			issuance: 0,
 		};
 
-		for bundle_desc in tx_desc.inputs.iter() {
-			for input_desc in bundle_desc.inputs.iter() {
-				add_input(&mut merkle_tree, input_desc, &params);
-			}
-		}
+		add_transaction_inputs(&mut merkle_tree, &tx_desc, &params);
 
 		let err = tx_desc.build(
 			block_number,
@@ -834,12 +858,17 @@ mod tests {
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
-				TransactionInputDesc {
-					position: 0,
-					value: 100_000,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+				TransactionInputBundleDesc {
 					privkey: <Bls12 as JubjubEngine>::Fs::zero(),
-					pubkey_base: edwards::Point::zero(),
+					change_value: 0,
+					inputs: vec![
+						TransactionInputDesc {
+							position: 0,
+							value: 100_000,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: edwards::Point::zero(),
+						},
+					],
 				},
 			],
 			outputs: vec![
@@ -871,19 +900,23 @@ mod tests {
 
 		let tx_desc = TransactionDesc::<Bls12> {
 			inputs: vec![
-				TransactionInputDesc {
-					position: 0,
-					value: 100_000,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+				TransactionInputBundleDesc {
 					privkey: <Bls12 as JubjubEngine>::Fs::one(),
-					pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
-				},
-				TransactionInputDesc {
-					position: 1,
-					value: 200_000,
-					value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
-					privkey: <Bls12 as JubjubEngine>::Fs::one(),
-					pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+					change_value: 0,
+					inputs: vec![
+						TransactionInputDesc {
+							position: 0,
+							value: 100_000,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+						},
+						TransactionInputDesc {
+							position: 1,
+							value: 200_000,
+							value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+							pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+						},
+					],
 				},
 			],
 			outputs: vec![
@@ -897,24 +930,21 @@ mod tests {
 			issuance: 400_000,
 		};
 
-		for bundle_desc in tx_desc.inputs.iter() {
-			for input_desc in bundle_desc.inputs.iter() {
-				add_input(&mut merkle_tree, input_desc, &params);
-			}
-		}
+		add_transaction_inputs(&mut merkle_tree, &tx_desc, &params);
 
-		let proof_params = proofs::tests::spend_params().unwrap();
+		let range_proof_params = proofs::tests::range_params().unwrap();
+		let spend_proof_params = proofs::tests::spend_params().unwrap();
 		let tx = tx_desc.build(
 			block_number,
 			&merkle_tree,
 			&params,
 			&mut rng
 		).unwrap();
-		let tx = tx.prove(&params, &proof_params, &mut rng).unwrap();
-
-		assert_eq!(tx.inputs.len(), 2);
-		assert_eq!(tx.outputs.len(), 2);
-		assert_eq!(tx.issuance, 400_000);
-		assert_eq!(tx.accumulator_state_block_number, block_number);
+		let tx = tx.prove(
+			&params,
+			&range_proof_params,
+			&spend_proof_params,
+			&mut rng,
+		).unwrap();
 	}
 }

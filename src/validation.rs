@@ -47,7 +47,7 @@ pub trait ChainState<E>
 	fn nullifier_exists(&self, nullifier: Nullifier) -> bool;
 }
 
-fn check_transaction<E, CS, BN>(
+pub fn check_transaction<E, CS, BN>(
 	params: &E::Params,
 	transaction: &Transaction<E, BN>,
 	chain_state: &CS,
@@ -57,8 +57,6 @@ fn check_transaction<E, CS, BN>(
 		CS: ChainState<E, BlockNumber=BN>,
 		BN: BlockNumber,
 {
-	// Get accumulator state. If the block number is not found in storage, then the block is
-	// either in the future or before the accumulator state retention window.
 	let accumulator_state =
 		chain_state.accumulator_state_at_height(&transaction.accumulator_state_block_number)
 			.ok_or_else(|| {
@@ -69,7 +67,10 @@ fn check_transaction<E, CS, BN>(
 	// TODO: Check ciphertext proof
 
 	let input_commitments = transaction.inputs.iter()
+		.flat_map(|bundle| bundle.inputs.iter())
 		.map(|input| input.value_comm.clone());
+	let change_commitments = transaction.inputs.iter()
+		.map(|bundle| bundle.change_comm.negate());
 	let output_commitments = transaction.outputs.iter()
 		.map(|output| output.value_comm.negate());
 	let value_commitments = input_commitments.chain(output_commitments);

@@ -2,9 +2,12 @@ use zk_taxes::{
 	constants::MERKLE_DEPTH,
 	hasher::PedersenHasher,
 	merkle_tree::IncrementalMerkleTree,
-	proofs::tests::spend_params,
+	proofs::tests::{range_params, spend_params},
 	transaction::BlockNumber,
-	wallet::{TransactionDesc, TransactionInputDesc, TransactionOutputDesc, UnprovenTransaction},
+	wallet::{
+		TransactionDesc, TransactionInputDesc, TransactionInputBundleDesc, TransactionOutputDesc,
+		UnprovenTransaction,
+	},
 };
 
 use ff::Field;
@@ -16,15 +19,40 @@ use zcash_primitives::jubjub::{FixedGenerators, JubjubBls12, JubjubEngine, Jubju
 fn add_input<E>(
 	merkle_tree: &mut IncrementalMerkleTree<PedersenHasher<E>>,
 	input: &TransactionInputDesc<E>,
+	privkey: &E::Fs,
 	params: &E::Params,
 )
 	where E: JubjubEngine
 {
 	let mut encoded_coin = Vec::new();
-	input.coin(params).write(&mut encoded_coin).unwrap();
+	input.coin(privkey, params).write(&mut encoded_coin).unwrap();
 
 	merkle_tree.track_next_leaf();
 	merkle_tree.push_data(&encoded_coin);
+}
+
+fn add_bundle_inputs<E>(
+	merkle_tree: &mut IncrementalMerkleTree<PedersenHasher<E>>,
+	bundle_desc: &TransactionInputBundleDesc<E>,
+	params: &E::Params,
+)
+	where E: JubjubEngine
+{
+	for input_desc in bundle_desc.inputs.iter() {
+		add_input(merkle_tree, input_desc, &bundle_desc.privkey, params);
+	}
+}
+
+fn add_transaction_inputs<E>(
+	merkle_tree: &mut IncrementalMerkleTree<PedersenHasher<E>>,
+	tx_desc: &TransactionDesc<E>,
+	params: &E::Params,
+)
+	where E: JubjubEngine
+{
+	for bundle_desc in tx_desc.inputs.iter() {
+		add_bundle_inputs(merkle_tree, bundle_desc, &params);
+	}
 }
 
 fn build_unproven_transaction<BN, R>(
@@ -40,12 +68,17 @@ fn build_unproven_transaction<BN, R>(
 {
 	let tx_desc = TransactionDesc::<Bls12> {
 		inputs: vec![
-			TransactionInputDesc {
-				position: 0,
-				value: 100_000,
-				value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+			TransactionInputBundleDesc {
 				privkey: <Bls12 as JubjubEngine>::Fs::one(),
-				pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+				change_value: 0,
+				inputs: vec![
+					TransactionInputDesc {
+						position: 0,
+						value: 100_000,
+						value_nonce: <Bls12 as JubjubEngine>::Fs::zero(),
+						pubkey_base: params.generator(FixedGenerators::SpendingKeyGenerator).into(),
+					},
+				],
 			},
 		],
 		outputs: vec![
@@ -56,9 +89,7 @@ fn build_unproven_transaction<BN, R>(
 		issuance: 0,
 	};
 
-	for input in tx_desc.inputs.iter() {
-		add_input(merkle_tree, input, params);
-	}
+	add_transaction_inputs(merkle_tree, &tx_desc, params);
 
 	let tx = tx_desc.build(
 		block_number,
@@ -85,6 +116,7 @@ fn main() {
 		&mut rng,
 	);
 
+	let range_proof_params = range_params().unwrap();
 	let spend_proof_params = spend_params().unwrap();
 
 	const SAMPLES: u32 = 1;
@@ -93,7 +125,7 @@ fn main() {
 	for _ in 0..SAMPLES {
 		let input = unproven_tx.inputs[0].clone();
 		let start = Instant::now();
-		let _ = input.prove(&params, &spend_proof_params, &mut rng).unwrap();
+		let _ = input.prove(&params, &range_proof_params, &spend_proof_params, &mut rng).unwrap();
 		total_time += start.elapsed();
 	}
 	let avg = total_time / SAMPLES;

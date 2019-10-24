@@ -3,9 +3,8 @@ pub mod range;
 pub mod spend;
 
 pub mod tests {
+	use super::*;
 	use crate::constants::MERKLE_DEPTH;
-	use crate::proofs::certificate;
-	use crate::proofs::spend;
 
 	use bellman::groth16::{generate_random_parameters, Parameters};
 	use pairing::bls12_381::Bls12;
@@ -17,14 +16,19 @@ pub mod tests {
 	use zcash_primitives::jubjub::JubjubBls12;
 
 	pub fn certificate_params() -> io::Result<Parameters<Bls12>> { params("Certificate.dat") }
-	pub fn spend_params() -> io::Result<Parameters<Bls12>> {
-		params("Spend.dat")
-	}
+	pub fn range_params() -> io::Result<Parameters<Bls12>> { params("Range.dat") }
+	pub fn spend_params() -> io::Result<Parameters<Bls12>> { params("Spend.dat") }
 
 	pub fn generate_certificate_params() -> io::Result<()> {
 		generate_params(
 			"Certificate.dat",
 			certificate::Circuit::without_assignment(&JubjubBls12::new())
+		)
+	}
+	pub fn generate_range_params() -> io::Result<()> {
+		generate_params(
+			"Range.dat",
+			range::Circuit::without_assignment(&JubjubBls12::new())
 		)
 	}
 	pub fn generate_spend_params() -> io::Result<()> {
