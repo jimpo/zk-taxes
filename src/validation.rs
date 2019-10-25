@@ -42,7 +42,7 @@ impl Display for Error {
 				write!(f, "input at index {} is already spent", index),
 			Error::ProofSynthesis(reason) =>
 				write!(f, "unexpected bellman error verifying proof: {}", reason),
-			Error::ProofSynthesis(reason) =>
+			Error::CertificateVerificationError(reason) =>
 				write!(f, "unexpected error verifying certificate: {}", reason),
 			Error::InvalidCertificate { output_index } =>
 				write!(f, "traceable anonymous certificate on output {} is invalid", output_index),
@@ -115,15 +115,15 @@ impl<E> PublicParams<E>
 	pub fn jubjub_params(&self) -> &E::Params {
 		self.jubjub_params.as_ref()
 	}
-
+	pub fn authority_pubkey(&self) -> &AuthorityPublicKey<E> {
+		&self.authority_pubkey
+	}
 	pub fn range_params(&self) -> &groth16::Parameters<E> {
 		&self.range_proof_params
 	}
-
 	pub fn spend_params(&self) -> &groth16::Parameters<E> {
 		&self.spend_proof_params
 	}
-
 	pub fn certificate_params(&self) -> &CertificateParams<E> {
 		&self.certificate_params
 	}
@@ -162,7 +162,9 @@ pub fn check_transaction<E, CS, BN>(
 		.map(|bundle| bundle.change_comm.negate());
 	let output_commitments = transaction.outputs.iter()
 		.map(|output| output.value_comm.negate());
-	let value_commitments = input_commitments.chain(output_commitments);
+	let value_commitments = input_commitments
+		.chain(change_commitments)
+		.chain(output_commitments);
 
 	// Check that input and output commitments sum to 0.
 	//
@@ -280,7 +282,7 @@ fn check_output_certificate<E>(
 	where E: JubjubEngine
 {
 	let valid = verify_certificate(
-		params.certificate_params(), &params.authority_pubkey, output.certificate
+		params.certificate_params(), &params.authority_pubkey, &output.certificate
 	)
 		.map_err(|err| match err {
 			CertificateError::ProofSynthesis(e) => Error::ProofSynthesis(e.to_string()),

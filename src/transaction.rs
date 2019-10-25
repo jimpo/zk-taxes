@@ -1,14 +1,17 @@
+use crate::certificate::AnonymousCertificate;
+use crate::codec::{Decode, Encode, invalid_data_io_error};
+
 use bellman::groth16::Proof;
 use byteorder::{LittleEndian, ByteOrder};
-use parity_codec::{Codec, Compact, Encode, Decode};
-use std::io::{self, Read, Write};
+use std::convert::TryFrom;
 use std::fmt::{Debug, Display};
+use std::io::{self, Read, Write};
 use zcash_primitives::jubjub::{edwards, JubjubEngine, Unknown};
 
 pub type Value = u64;
 pub type Nullifier = [u8; 32];
 
-pub trait BlockNumber: Debug + Display + Clone {}
+pub trait BlockNumber: Debug + Display + Decode<()> + Encode + Clone {}
 impl BlockNumber for u64 {}
 
 #[derive(PartialEq, Clone)]
@@ -26,33 +29,25 @@ pub struct Transaction<E, BN>
 impl<E, BN> Transaction<E, BN>
 	where
 		E: JubjubEngine,
-		BN: Codec,
+		BN: BlockNumber,
 {
 	pub fn read<R: Read>(mut reader: R, params: &E::Params) -> io::Result<Self> {
-		let inputs_length = <Compact<u32>>::decode(&mut reader)
-			.ok_or_else(|| {
-				io::Error::new(io::ErrorKind::InvalidData, "failed to decode inputs length")
-			})?;
-		let inputs = (0..inputs_length.0)
+		let inputs_length = u16::read(&mut reader, &())
+			.map_err(|_| invalid_data_io_error("failed to decode input bundles length"))?;
+		let inputs = (0..inputs_length)
 			.map(|_| <TransactionInputBundle<E>>::read(&mut reader, params))
 			.collect::<Result<_, _>>()?;
 
-		let outputs_length = <Compact<u32>>::decode(&mut reader)
-			.ok_or_else(|| {
-				io::Error::new(io::ErrorKind::InvalidData, "failed to decode outputs length")
-			})?;
-		let outputs = (0..outputs_length.0)
+		let outputs_length = u16::read(&mut reader, &())
+			.map_err(|_| invalid_data_io_error("failed to decode outputs length"))?;
+		let outputs = (0..outputs_length)
 			.map(|_| <TransactionOutput<E>>::read(&mut reader, params))
 			.collect::<Result<_, _>>()?;
 
-		let issuance = Decode::decode(&mut reader)
-			.ok_or_else(|| {
-				io::Error::new(io::ErrorKind::InvalidData, "failed to decode issuance")
-			})?;
-		let accumulator_state_block_number = BN::decode(&mut reader)
-			.ok_or_else(|| {
-				io::Error::new(io::ErrorKind::InvalidData, "failed to decode block number")
-			})?;
+		let issuance = i64::read(&mut reader, &())
+			.map_err(|_| invalid_data_io_error("failed to decode issuance"))?;
+		let accumulator_state_block_number = BN::read(&mut reader, &())
+			.map_err(|_| invalid_data_io_error("failed to decode block number"))?;
 
 		Ok(Transaction {
 			inputs,
@@ -63,18 +58,22 @@ impl<E, BN> Transaction<E, BN>
 	}
 
 	pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
-		Compact(self.inputs.len() as u32).encode_to(&mut writer);
+		u16::try_from(self.inputs.len())
+			.map_err(|_| invalid_data_io_error("transaction has too many input bundles"))?
+			.write(&mut writer)?;
 		for input in self.inputs.iter() {
 			input.write(&mut writer)?;
 		}
 
-		Compact(self.outputs.len() as u32).encode_to(&mut writer);
+		u16::try_from(self.outputs.len())
+			.map_err(|_| invalid_data_io_error("transaction has too many outputs"))?
+			.write(&mut writer)?;
 		for output in self.outputs.iter() {
 			output.write(&mut writer)?;
 		}
 
-		self.issuance.encode_to(&mut writer);
-		self.accumulator_state_block_number.encode_to(&mut writer);
+		self.issuance.write(&mut writer)?;
+		self.accumulator_state_block_number.write(&mut writer)?;
 
 		Ok(())
 	}
@@ -107,7 +106,7 @@ impl<E> TransactionInput<E>
 
 	pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
 		self.value_comm.write(&mut writer)?;
-		self.nullifier.encode_to(&mut writer);
+		writer.write(&self.nullifier[..])?;
 		self.proof.write(&mut writer)?;
 		Ok(())
 	}
@@ -118,8 +117,7 @@ pub struct TransactionOutput<E>
 	where E: JubjubEngine
 {
 	pub value_comm: edwards::Point<E, Unknown>,
-	// pub credential: Vec<u8>,
-	// pub credential_proof: ,
+	pub certificate: AnonymousCertificate<E>,
 	// pub enc_details: ,
 	// pub enc_details_proof: ,
 }
@@ -129,14 +127,17 @@ impl<E> TransactionOutput<E>
 {
 	pub fn read<R: Read>(mut reader: R, params: &E::Params) -> io::Result<Self> {
 		let value_comm = <edwards::Point<E, Unknown>>::read(&mut reader, params)?;
+		let certificate = AnonymousCertificate::read(&mut reader, params)?;
 
 		Ok(TransactionOutput {
 			value_comm,
+			certificate,
 		})
 	}
 
 	pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
 		self.value_comm.write(&mut writer)?;
+		self.certificate.write(&mut writer)?;
 		Ok(())
 	}
 
@@ -176,11 +177,9 @@ impl<E> TransactionInputBundle<E>
 			<edwards::Point<E, Unknown>>::read(&mut reader, params)?
 		);
 
-		let inputs_length = <Compact<u32>>::decode(&mut reader)
-			.ok_or_else(|| {
-				io::Error::new(io::ErrorKind::InvalidData, "failed to decode inputs length")
-			})?;
-		let inputs = (0..inputs_length.0)
+		let inputs_length = u16::read(&mut reader, &())
+			.map_err(|_| invalid_data_io_error("failed to decode inputs length"))?;
+		let inputs = (0..inputs_length)
 			.map(|_| <TransactionInput<E>>::read(&mut reader, params))
 			.collect::<Result<_, _>>()?;
 
@@ -199,7 +198,9 @@ impl<E> TransactionInputBundle<E>
 		self.pubkey.0.write(&mut writer)?;
 		self.pubkey.1.write(&mut writer)?;
 
-		Compact(self.inputs.len() as u32).encode_to(&mut writer);
+		u16::try_from(self.inputs.len())
+			.map_err(|_| invalid_data_io_error("transaction input bundle has too many inputs"))?
+			.write(&mut writer)?;
 		for input in self.inputs.iter() {
 			input.write(&mut writer)?;
 		}
@@ -250,3 +251,4 @@ impl<E> Coin<E>
 		Ok(())
 	}
 }
+

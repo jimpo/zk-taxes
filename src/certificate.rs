@@ -1,3 +1,8 @@
+use crate::codec::{
+	Encode, Decode,
+	read_curve_affine_compressed, write_curve_affine_compressed,
+	read_prime_field_le, write_prime_field_le,
+};
 use crate::proofs::certificate as certificate_proof;
 
 use bellman::groth16;
@@ -7,6 +12,7 @@ use ff::{BitIterator, Field, PrimeField, PrimeFieldRepr};
 use group::{CurveAffine, CurveProjective};
 use rand::{CryptoRng, RngCore};
 use std::fmt::{self, Display, Formatter};
+use std::io::{self, Read, Write};
 use std::rc::Rc;
 use zcash_primitives::jubjub::{
 	edwards, FixedGenerators, JubjubEngine, PrimeOrder, JubjubParams, Unknown,
@@ -47,7 +53,6 @@ pub struct PublicParams<E>
 	jubjub_params: Rc<E::Params>,
 	proof_params: groth16::Parameters<E>,
 	verifying_key: groth16::PreparedVerifyingKey<E>,
-	generator: FixedGenerators,
 	g1: E::G1Affine,
 	g2: E::G2Affine,
 	g3: edwards::Point<E, PrimeOrder>,
@@ -67,7 +72,6 @@ impl<E> PublicParams<E>
 			jubjub_params,
 			proof_params,
 			verifying_key,
-			generator,
 			g1,
 			g2,
 			g3,
@@ -91,7 +95,7 @@ pub struct AuthorityKey<E>
 impl<E> AuthorityKey<E>
 	where E: JubjubEngine
 {
-	fn pubkey(&self) -> &AuthorityPublicKey<E> {
+	pub fn pubkey(&self) -> &AuthorityPublicKey<E> {
 		&self.pubkey
 	}
 }
@@ -114,6 +118,7 @@ pub struct UserKey<E>
 	k_g3: G3<E>,
 }
 
+#[derive(Clone)]
 pub struct UserCredential<E>
 	where E: JubjubEngine
 {
@@ -121,6 +126,7 @@ pub struct UserCredential<E>
 	sigma: (E::G1, E::G1),
 }
 
+#[derive(PartialEq, Clone)]
 pub struct AnonymousCertificate<E>
 	where E: JubjubEngine
 {
@@ -133,6 +139,56 @@ pub struct AnonymousCertificate<E>
 	s_b: E::Fr,
 	s_q: E::Fr,
 	proof: groth16::Proof<E>,
+}
+
+impl<E> Encode for AnonymousCertificate<E>
+	where E: JubjubEngine
+{
+	fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
+		self.pk.0.write(&mut writer)?;
+		self.pk.1.write(&mut writer)?;
+		write_curve_affine_compressed(&mut writer, &self.sigma.0.into_affine())?;
+		write_curve_affine_compressed(&mut writer, &self.sigma.1.into_affine())?;
+		self.tau.write(&mut writer)?;
+		write_prime_field_le(&mut writer, &self.c)?;
+		write_prime_field_le(&mut writer, &self.s_id)?;
+		write_prime_field_le(&mut writer, &self.s_b)?;
+		write_prime_field_le(&mut writer, &self.s_q)?;
+		self.proof.write(&mut writer)?;
+		Ok(())
+	}
+}
+
+impl<E> Decode<E::Params> for AnonymousCertificate<E>
+	where E: JubjubEngine
+{
+	fn read<R: Read>(mut reader: R, params: &E::Params) -> io::Result<Self> {
+		let pk = (
+			<G3<E>>::read(&mut reader, params)?,
+			<G3<E>>::read(&mut reader, params)?
+		);
+		let sigma = (
+			read_curve_affine_compressed::<_, E::G1Affine>(&mut reader)?.into_projective(),
+			read_curve_affine_compressed::<_, E::G1Affine>(&mut reader)?.into_projective(),
+		);
+		let tau = <G3<E>>::read(&mut reader, params)?;
+		let c = read_prime_field_le(&mut reader)?;
+		let s_id = read_prime_field_le(&mut reader)?;
+		let s_b = read_prime_field_le(&mut reader)?;
+		let s_q = read_prime_field_le(&mut reader)?;
+		let proof = groth16::Proof::read(&mut reader)?;
+
+		Ok(AnonymousCertificate {
+			pk,
+			sigma,
+			tau,
+			c,
+			s_id,
+			s_b,
+			s_q,
+			proof,
+		})
+	}
 }
 
 impl<E> UserKey<E>
@@ -309,7 +365,7 @@ pub fn issue_certificate<E, R>(
 	authority_pubkey: &AuthorityPublicKey<E>,
 	credential: &UserCredential<E>,
 )
-	-> Result<AnonymousCertificate<E>, Error>
+	-> Result<AnonymousCertificate<E>, SynthesisError>
 	where
 		E: JubjubEngine,
 		R: RngCore + CryptoRng,
@@ -329,8 +385,7 @@ pub fn issue_certificate<E, R>(
 		}),
 	};
 
-	let proof = groth16::create_random_proof(circuit, &params.proof_params, Some(q.clone()), rng)
-		.map_err(Error::ProofSynthesis)?;
+	let proof = groth16::create_random_proof(circuit, &params.proof_params, Some(q.clone()), rng)?;
 	let d_g1 = proof.d.expect("proof circuit has committed inputs; D is Some");
 
 	// Create sigma proof.

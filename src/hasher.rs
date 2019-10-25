@@ -3,6 +3,8 @@ use zcash_primitives::{
     jubjub::JubjubEngine,
     pedersen_hash::{pedersen_hash, Personalization}
 };
+use std::marker::PhantomData;
+use std::ops::Deref;
 
 pub trait MerkleHasher {
     type Out: Default + PartialEq + Eq + Send + Sync + Clone + Copy;
@@ -12,14 +14,19 @@ pub trait MerkleHasher {
     fn hash_internal(&self, height: usize, left: &Self::Out, right: &Self::Out) -> Self::Out;
 }
 
-pub struct PedersenHasher<'a, E>
-    where E: JubjubEngine
+pub struct PedersenHasher<E, P>
+    where
+        E: JubjubEngine,
+        P: Deref<Target=E::Params>,
 {
-    pub params: &'a E::Params,
+    pub params: P,
+    _engine_marker: PhantomData<E>,
 }
 
-impl<'a, E> MerkleHasher for PedersenHasher<'a, E>
-    where E: JubjubEngine
+impl<E, P> MerkleHasher for PedersenHasher<E, P>
+    where
+        E: JubjubEngine,
+        P: Deref<Target=E::Params>,
 {
     type Out = <E::Fr as PrimeField>::Repr;
 
@@ -58,17 +65,22 @@ impl<'a, E> MerkleHasher for PedersenHasher<'a, E>
         let pt = pedersen_hash::<E, _>(
             Personalization::MerkleTree(height),
             left_bits.chain(right_bits),
-            &self.params
+            &*self.params
         );
         pt.to_xy().0.into_repr()
     }
 }
 
-impl<'a, E> PedersenHasher<'a, E>
-    where E: JubjubEngine
+impl<E, P> PedersenHasher<E, P>
+    where
+        E: JubjubEngine,
+        P: Deref<Target=E::Params>,
 {
-    pub fn new(params: &'a E::Params) -> Self {
-        PedersenHasher { params }
+    pub fn new(params: P) -> Self {
+        PedersenHasher {
+            params,
+            _engine_marker: PhantomData::default(),
+        }
     }
 
 //    fn point_to_hash(&self, pt: &edwards::Point<E, PrimeOrder>) -> <Self as MerkleHasher>::Out {

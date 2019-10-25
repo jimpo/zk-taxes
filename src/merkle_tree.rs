@@ -303,9 +303,7 @@ mod tests {
 
         let depth = 62;
         let jubjub_params = &JubjubBls12::new();
-        let hasher = PedersenHasher::<Bls12> {
-            params: jubjub_params,
-        };
+        let hasher = <PedersenHasher<Bls12, _>>::new(jubjub_params);
 
         let merkle_empty = compute_empty_subtree_roots(depth, &hasher).iter()
             .map(|hash| hex_encode_field_element(hash))
@@ -334,9 +332,7 @@ mod tests {
             .collect();
 
         let jubjub_params = &JubjubBls12::new();
-        let hasher = PedersenHasher::<Bls12> {
-            params: jubjub_params,
-        };
+        let hasher = <PedersenHasher<Bls12, _>>::new(jubjub_params);
 
         let mut tree = IncrementalMerkleTree::new(4, 0, Vec::new(), hasher).unwrap();
 
