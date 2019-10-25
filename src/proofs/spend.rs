@@ -315,12 +315,16 @@ mod tests {
 	use super::*;
 
 	use crate::constants::MERKLE_DEPTH;
+	use crate::hasher::PedersenHasher;
+	use crate::merkle_tree::IncrementalMerkleTree;
+	use crate::proofs::tests::spend_params;
+	use crate::transaction::Coin;
+	use crate::util::{compute_nullifier, value_commitment};
 
-	use bellman::{
-		Circuit as CircuitT,
-		gadgets::test::TestConstraintSystem
-	};
+	use bellman::{Circuit as CircuitT, gadgets::test::TestConstraintSystem, groth16};
+	use ff::{PrimeField, ScalarEngine};
 	use pairing::bls12_381::Bls12;
+	use rand::{SeedableRng, rngs::StdRng, Rng};
 	use zcash_primitives::jubjub::{JubjubBls12, JubjubParams};
 
 	#[test]
@@ -348,5 +352,121 @@ mod tests {
 		circuit.synthesize(&mut cs).unwrap();
 
 		assert_eq!(cs.num_constraints(), 78109);
+	}
+
+	#[test]
+	fn real_groth16_bls12() {
+		let jubjub_params = JubjubBls12::new();
+		let mut rng = StdRng::seed_from_u64(0);
+
+		// Create a bunch of random coins.
+		// Add to merkle tree.
+		// Choose a random index.
+		let generator = jubjub_params.generator(FixedGenerators::ProofGenerationKey);
+
+		let position = 57;
+		let value = rng.gen::<Value>();
+		let value_nonce_old = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+		let value_nonce_new = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+		let privkey = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+		let pubkey_base_old = <edwards::Point<_, Unknown>>::from(
+			generator.mul(
+				<Bls12 as JubjubEngine>::Fs::random(&mut rng).into_repr(),
+				&jubjub_params,
+			)
+		);
+		let pubkey_base_new = <edwards::Point<_, Unknown>>::from(
+			generator.mul(
+				<Bls12 as JubjubEngine>::Fs::random(&mut rng).into_repr(),
+				&jubjub_params,
+			)
+		);
+		let pubkey_raised_old = pubkey_base_old.mul(privkey, &jubjub_params);
+		let coin = Coin {
+			position,
+			value_comm: value_commitment(value, &value_nonce_old, &jubjub_params).into(),
+			pubkey: (pubkey_base_old.clone(), pubkey_raised_old.clone()),
+		};
+
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, <PedersenHasher<Bls12, _>>::new(&jubjub_params)
+		);
+		for i in 0..100 {
+			let (value, value_nonce, privkey, pubkey_base) =
+				if i == position {
+					merkle_tree.track_next_leaf();
+					(value, value_nonce_old.clone(), privkey.clone(), pubkey_base_old.clone())
+				} else {
+					let value = rng.gen::<Value>();
+					let value_nonce = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+					let privkey = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+					let pubkey_base = <edwards::Point<_, Unknown>>::from(
+						generator.mul(
+							<Bls12 as JubjubEngine>::Fs::random(&mut rng).into_repr(),
+							&jubjub_params,
+						)
+					);
+					(value, value_nonce, privkey, pubkey_base)
+				};
+			let pubkey_raised = pubkey_base.mul(privkey, &jubjub_params);
+
+			let coin = Coin {
+				position: i,
+				value_comm: value_commitment(value, &value_nonce, &jubjub_params).into(),
+				pubkey: (pubkey_base, pubkey_raised),
+			};
+			let mut encoded_coin = Vec::new();
+			coin.write(&mut encoded_coin).unwrap();
+
+			merkle_tree.push_data(&encoded_coin);
+		}
+
+		let value_comm_new = value_commitment::<Bls12>(value, &value_nonce_new, &jubjub_params);
+		let pubkey_raised_new = pubkey_base_new.mul(privkey, &jubjub_params);
+		let nullifier = compute_nullifier(&privkey, position);
+		let auth_path = merkle_tree.tracked_branch(position)
+			.unwrap()
+			.iter()
+			.map(|hash| <Bls12 as ScalarEngine>::Fr::from_repr(*hash).unwrap())
+			.collect::<Vec<_>>();
+		let anchor = <Bls12 as ScalarEngine>::Fr::from_repr(merkle_tree.root()).unwrap();
+
+		let (value_comm_new_x, value_comm_new_y) = value_comm_new.to_xy();
+		let (pubkey_base_new_x, pubkey_base_new_y) = pubkey_base_new.to_xy();
+		let (pubkey_raised_new_x, pubkey_raised_new_y) = pubkey_raised_new.to_xy();
+		let nullifier_bits = multipack::bytes_to_bits_le(&nullifier[..]);
+
+		let assignment = Assignment {
+			position,
+			value,
+			value_nonce_old,
+			value_nonce_new,
+			privkey,
+			pubkey_base_old,
+			pubkey_base_new,
+			nullifier,
+			auth_path,
+			anchor,
+		};
+		let circuit = Circuit {
+			params: &jubjub_params,
+			merkle_depth: MERKLE_DEPTH,
+			assigned: Some(assignment.clone()),
+		};
+
+		let proof_params = spend_params().unwrap();
+		let verifying_key = groth16::prepare_verifying_key(&proof_params.vk);
+
+		let proof = groth16::create_random_proof(circuit, &proof_params, None, &mut rng)
+			.unwrap();
+
+		let mut public_inputs = vec![
+			assignment.anchor,
+			value_comm_new_x, value_comm_new_y,
+			pubkey_base_new_x, pubkey_base_new_y,
+			pubkey_raised_new_x, pubkey_raised_new_y,
+		];
+		public_inputs.extend(multipack::compute_multipacking::<Bls12>(&nullifier_bits));
+		assert!(groth16::verify_proof(&verifying_key, &proof, &public_inputs[..]).unwrap());
 	}
 }

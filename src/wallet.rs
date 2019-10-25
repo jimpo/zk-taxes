@@ -1,4 +1,4 @@
-use bellman::groth16::create_random_proof;
+use bellman::{SynthesisError, groth16::create_random_proof};
 use blake2::{Blake2s, Digest};
 use byteorder::{LittleEndian, ByteOrder};
 use ff::{Field, PrimeField, PrimeFieldRepr};
@@ -7,19 +7,19 @@ use rand::{CryptoRng, RngCore};
 use std::fmt::{self, Display, Formatter};
 use std::mem::size_of;
 use std::ops::Deref;
-use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown, PrimeOrder};
+use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown};
 
 use crate::certificate::{UserCredential, issue_certificate};
 use crate::constants::MERKLE_DEPTH;
 use crate::hasher::{PedersenHasher, MerkleHasher};
+use crate::merkle_tree::IncrementalMerkleTree;
 use crate::proofs::{range, spend};
 use crate::transaction::{
 	BlockNumber, Coin, Nullifier, Value,
 	Transaction, TransactionInput, TransactionOutput, TransactionInputBundle,
 };
+use crate::util::value_commitment;
 use crate::validation::{self, PublicParams};
-use crate::merkle_tree::IncrementalMerkleTree;
-use bellman::SynthesisError;
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -522,15 +522,6 @@ fn compute_nullifier<E>(privkey: &E::Fs, position: u64) -> Nullifier
 	let mut nullifier = Nullifier::default();
 	&mut nullifier[..].copy_from_slice(digest.as_slice());
 	nullifier
-}
-
-fn value_commitment<E>(value: Value, nonce: &E::Fs, params: &E::Params)
-	-> edwards::Point<E, PrimeOrder>
-	where E: JubjubEngine
-{
-	let g = params.generator(FixedGenerators::ValueCommitmentValue);
-	let h = params.generator(FixedGenerators::ValueCommitmentRandomness);
-	g.mul(value, params).add(&h.mul(nonce.into_repr(), params), params)
 }
 
 fn is_low_order<E>(pt: &edwards::Point<E, Unknown>, params: &E::Params) -> bool

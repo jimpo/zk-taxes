@@ -87,13 +87,13 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::proofs::tests::range_params;
+	use crate::util::value_commitment;
 
-	use bellman::{
-		Circuit as CircuitT,
-		gadgets::test::TestConstraintSystem
-	};
+	use bellman::{Circuit as CircuitT, gadgets::test::TestConstraintSystem, groth16};
 	use ff::Field;
 	use pairing::bls12_381::Bls12;
+	use rand::{SeedableRng, rngs::StdRng, Rng};
 	use zcash_primitives::jubjub::JubjubBls12;
 
 	#[test]
@@ -112,5 +112,36 @@ mod tests {
 		circuit.synthesize(&mut cs).unwrap();
 
 		assert_eq!(cs.num_constraints(), 1265);
+	}
+
+	#[test]
+	fn real_groth16_bls12() {
+		let jubjub_params = JubjubBls12::new();
+		let mut rng = StdRng::seed_from_u64(0);
+
+		let value = rng.gen::<Value>();
+		let nonce = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+		let commitment = value_commitment::<Bls12>(value, &nonce, &jubjub_params);
+
+		let assignment = Assignment {
+			value,
+			nonce,
+		};
+		let circuit = Circuit {
+			params: &jubjub_params,
+			assigned: Some(assignment.clone()),
+		};
+
+		let proof_params = range_params().unwrap();
+		let verifying_key = groth16::prepare_verifying_key(&proof_params.vk);
+
+		let proof = groth16::create_random_proof(circuit, &proof_params, None, &mut rng)
+			.unwrap();
+
+		let (commitment_x, commitment_y) = commitment.to_xy();
+		let public_inputs = [
+			commitment_x, commitment_y,
+		];
+		assert!(groth16::verify_proof(&verifying_key, &proof, &public_inputs[..]).unwrap());
 	}
 }
