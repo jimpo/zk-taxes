@@ -1,11 +1,8 @@
 use bellman::{SynthesisError, groth16::create_random_proof};
-use blake2::{Blake2s, Digest};
-use byteorder::{LittleEndian, ByteOrder};
-use ff::{Field, PrimeField, PrimeFieldRepr};
+use ff::{Field, PrimeField};
 use pairing::Engine;
 use rand::{CryptoRng, RngCore};
 use std::fmt::{self, Display, Formatter};
-use std::mem::size_of;
 use std::ops::Deref;
 use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown};
 
@@ -18,7 +15,7 @@ use crate::transaction::{
 	BlockNumber, Coin, Nullifier, Value,
 	Transaction, TransactionInput, TransactionOutput, TransactionInputBundle,
 };
-use crate::util::value_commitment;
+use crate::util::{compute_nullifier, value_commitment};
 use crate::validation::{self, PublicParams};
 
 #[derive(Debug, PartialEq)]
@@ -73,7 +70,7 @@ impl<E> TransactionInputDesc<E>
 		-> Result<UnprovenTransactionInput<E>, Error>
 		where P: Deref<Target=E::Params>
 	{
-		let nullifier = compute_nullifier::<E>(privkey, self.position);
+		let nullifier = compute_nullifier(privkey, self.position);
 		let anchor = E::Fr::from_repr(merkle_tree.root())
 			.map_err(|_| Error::AccumulatorStateInvalid)?;
 		let auth_path = merkle_tree.tracked_branch(self.position)
@@ -380,7 +377,7 @@ impl<E> UnprovenTransactionInput<E>
 			return Err("merkle root mismatch");
 		}
 
-		if assigned.nullifier != compute_nullifier::<E>(&assigned.privkey, assigned.position) {
+		if assigned.nullifier != compute_nullifier(&assigned.privkey, assigned.position) {
 			return Err("nullifier mismatch");
 		}
 
@@ -504,24 +501,6 @@ impl<E> UnprovenTransactionInputBundle<E>
 			proof,
 		})
 	}
-}
-
-fn compute_nullifier<E>(privkey: &E::Fs, position: u64) -> Nullifier
-	where E: JubjubEngine
-{
-	let mut preimage = Vec::new();
-	privkey.into_repr().write_le(&mut preimage)
-		.expect("writing to Vec should not fail");
-
-	let index = preimage.len();
-	preimage.resize(index + size_of::<u64>(), 0);
-	LittleEndian::write_u64(&mut preimage[index..], position);
-
-	let digest = Blake2s::digest(preimage.as_slice());
-
-	let mut nullifier = Nullifier::default();
-	&mut nullifier[..].copy_from_slice(digest.as_slice());
-	nullifier
 }
 
 fn is_low_order<E>(pt: &edwards::Point<E, Unknown>, params: &E::Params) -> bool

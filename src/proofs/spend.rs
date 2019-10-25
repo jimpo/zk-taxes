@@ -281,10 +281,9 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 		};
 
 		// Let's compute nullifier = BLAKE2s(privkey || position).
-		let nullifier_preimage = privkey_bits.iter()
-			.chain(position_bits.iter())
-			.cloned()
+		let nullifier_preimage = privkey_bits.into_iter()
 			.chain(iter::repeat(boolean::Boolean::constant(false)).take(4))
+			.chain(position_bits.into_iter())
 			.collect::<Vec<_>>();
 
 		assert_eq!(nullifier_preimage.len(), 320);
@@ -359,70 +358,58 @@ mod tests {
 		let jubjub_params = JubjubBls12::new();
 		let mut rng = StdRng::seed_from_u64(0);
 
-		// Create a bunch of random coins.
-		// Add to merkle tree.
-		// Choose a random index.
 		let generator = jubjub_params.generator(FixedGenerators::ProofGenerationKey);
 
+		let mut value = 0;
+		let mut value_nonce_old = <Bls12 as JubjubEngine>::Fs::zero();
+		let mut privkey = <Bls12 as JubjubEngine>::Fs::zero();
+		let mut pubkey_base_old = <edwards::Point<_, Unknown>>::zero();
+
+		// Build an accumulator with random coins and choose one of them for the proof inputs.
 		let position = 57;
-		let value = rng.gen::<Value>();
-		let value_nonce_old = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
-		let value_nonce_new = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
-		let privkey = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
-		let pubkey_base_old = <edwards::Point<_, Unknown>>::from(
-			generator.mul(
-				<Bls12 as JubjubEngine>::Fs::random(&mut rng).into_repr(),
-				&jubjub_params,
-			)
+		let mut merkle_tree = IncrementalMerkleTree::empty(
+			MERKLE_DEPTH, <PedersenHasher<Bls12, _>>::new(&jubjub_params)
 		);
+		for i in 0..100 {
+			let leaf_value = rng.gen::<Value>();
+			let leaf_value_nonce = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+			let leaf_privkey = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
+			let leaf_pubkey_base = <edwards::Point<_, Unknown>>::from(
+				generator.mul(
+					<Bls12 as JubjubEngine>::Fs::random(&mut rng).into_repr(),
+					&jubjub_params,
+				)
+			);
+			let leaf_pubkey_raised = leaf_pubkey_base.mul(leaf_privkey, &jubjub_params);
+			let leaf_coin = Coin {
+				position: i,
+				value_comm: value_commitment(leaf_value, &leaf_value_nonce, &jubjub_params).into(),
+				pubkey: (leaf_pubkey_base.clone(), leaf_pubkey_raised.clone()),
+			};
+
+			let mut encoded_coin = Vec::new();
+			leaf_coin.write(&mut encoded_coin).unwrap();
+
+			if i == position {
+				value = leaf_value;
+				value_nonce_old = leaf_value_nonce;
+				privkey = leaf_privkey;
+				pubkey_base_old = leaf_pubkey_base;
+				merkle_tree.track_next_leaf();
+			}
+			merkle_tree.push_data(&encoded_coin);
+		}
+
+		let value_nonce_new = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
 		let pubkey_base_new = <edwards::Point<_, Unknown>>::from(
 			generator.mul(
 				<Bls12 as JubjubEngine>::Fs::random(&mut rng).into_repr(),
 				&jubjub_params,
 			)
 		);
-		let pubkey_raised_old = pubkey_base_old.mul(privkey, &jubjub_params);
-		let coin = Coin {
-			position,
-			value_comm: value_commitment(value, &value_nonce_old, &jubjub_params).into(),
-			pubkey: (pubkey_base_old.clone(), pubkey_raised_old.clone()),
-		};
-
-		let mut merkle_tree = IncrementalMerkleTree::empty(
-			MERKLE_DEPTH, <PedersenHasher<Bls12, _>>::new(&jubjub_params)
-		);
-		for i in 0..100 {
-			let (value, value_nonce, privkey, pubkey_base) =
-				if i == position {
-					merkle_tree.track_next_leaf();
-					(value, value_nonce_old.clone(), privkey.clone(), pubkey_base_old.clone())
-				} else {
-					let value = rng.gen::<Value>();
-					let value_nonce = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
-					let privkey = <Bls12 as JubjubEngine>::Fs::random(&mut rng);
-					let pubkey_base = <edwards::Point<_, Unknown>>::from(
-						generator.mul(
-							<Bls12 as JubjubEngine>::Fs::random(&mut rng).into_repr(),
-							&jubjub_params,
-						)
-					);
-					(value, value_nonce, privkey, pubkey_base)
-				};
-			let pubkey_raised = pubkey_base.mul(privkey, &jubjub_params);
-
-			let coin = Coin {
-				position: i,
-				value_comm: value_commitment(value, &value_nonce, &jubjub_params).into(),
-				pubkey: (pubkey_base, pubkey_raised),
-			};
-			let mut encoded_coin = Vec::new();
-			coin.write(&mut encoded_coin).unwrap();
-
-			merkle_tree.push_data(&encoded_coin);
-		}
+		let pubkey_raised_new = pubkey_base_new.mul(privkey, &jubjub_params);
 
 		let value_comm_new = value_commitment::<Bls12>(value, &value_nonce_new, &jubjub_params);
-		let pubkey_raised_new = pubkey_base_new.mul(privkey, &jubjub_params);
 		let nullifier = compute_nullifier(&privkey, position);
 		let auth_path = merkle_tree.tracked_branch(position)
 			.unwrap()

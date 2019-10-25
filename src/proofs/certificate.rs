@@ -190,7 +190,6 @@ mod tests {
 			.mul(nonce, &jubjub_params)
 			.add(&pubkey, &jubjub_params);
 
-		let (pubkey_x, pubkey_y) = pubkey.to_xy();
 		let (pubkey_base_x, pubkey_base_y) = pubkey_base.to_xy();
 		let (pubkey_raised_x, pubkey_raised_y) = pubkey_raised.to_xy();
 		let (tracing_pubkey_x, tracing_pubkey_y) = tracing_pubkey.to_xy();
