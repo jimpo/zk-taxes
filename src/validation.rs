@@ -1,5 +1,5 @@
-use bellman::groth16;
-use ff::PrimeField;
+use bellman::{gadgets::multipack, groth16};
+use ff::{PrimeField, ScalarEngine};
 use std::cmp;
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
@@ -60,8 +60,10 @@ impl Display for Error {
 
 impl std::error::Error for Error {}
 
-pub type AccumulatorState<E: JubjubEngine> = <E::Fr as PrimeField>::Repr;
+/// The accumulator (ie. Merkle root).
+pub type AccumulatorState<E> = <<E as ScalarEngine>::Fr as PrimeField>::Repr;
 
+/// Trait for querying parts of the blockchain state.
 pub trait ChainState<E>
 	where E: JubjubEngine,
 {
@@ -69,9 +71,10 @@ pub trait ChainState<E>
 
 	fn accumulator_state_at_height(&self, block_number: &Self::BlockNumber)
 		-> Option<AccumulatorState<E>>;
-	fn nullifier_exists(&self, nullifier: Nullifier) -> bool;
+	fn nullifier_exists(&self, nullifier: &Nullifier) -> bool;
 }
 
+/// Aggregation of all public system parameters required to generate and verify transactions.
 pub struct PublicParams<E>
 	where E: JubjubEngine
 {
@@ -129,6 +132,8 @@ impl<E> PublicParams<E>
 	}
 }
 
+/// Fully validate a transaction with respect to the chain state.
+/// Returns Ok if the transaction is valid, otherwise an Err.
 pub fn check_transaction<E, CS, BN>(
 	params: &PublicParams<E>,
 	transaction: &Transaction<E, BN>,
@@ -143,6 +148,7 @@ pub fn check_transaction<E, CS, BN>(
 		chain_state.accumulator_state_at_height(&transaction.accumulator_state_block_number)
 			.ok_or(Error::InvalidBlockNumber)?;
 
+	// Check all SNARK proofs and traceable anonymous certificates.
 	for (bundle_index, bundle) in transaction.inputs.iter().enumerate() {
 		check_bundle_range_proof(params, bundle_index, bundle)?;
 		for (input_index, input) in bundle.inputs.iter().enumerate() {
@@ -167,9 +173,6 @@ pub fn check_transaction<E, CS, BN>(
 		.chain(output_commitments);
 
 	// Check that input and output commitments sum to 0.
-	//
-	// We can perform operators in the full group of curve points (not the prime order subgroup)
-	// because the prime order is checked inside of the input and output SNARKs.
 	let zero = edwards::Point::<E, Unknown>::zero();
 	let issuance_commitment = if transaction.issuance == 0 {
 		zero.clone()
@@ -191,9 +194,6 @@ pub fn check_transaction<E, CS, BN>(
 		return Err(Error::UnbalancedTransaction);
 	}
 
-	// TODO: Check output credentials
-
-
 	// Check that nullifiers are valid.
 	let mut nullifiers = transaction.inputs.iter()
 		.flat_map(|bundle| bundle.inputs.iter())
@@ -211,7 +211,7 @@ pub fn check_transaction<E, CS, BN>(
 	}
 
 	// Check that all nullifiers are unused.
-	match nullifiers.iter().find(|(_, nullifier)| chain_state.nullifier_exists(*nullifier)) {
+	match nullifiers.iter().find(|(_, nullifier)| chain_state.nullifier_exists(nullifier)) {
 		Some((index, _)) => return Err(Error::DoubleSpend(*index)),
 		None => {}
 	}
@@ -226,11 +226,15 @@ fn check_bundle_range_proof<E>(
 ) -> Result<(), Error>
 	where E: JubjubEngine
 {
-	let (change_comm_x, change_comm_y) = bundle.change_comm.to_xy();
+	let aggregate_comm = bundle.inputs.iter()
+		.fold(bundle.change_comm.negate(), |sum, input| {
+			sum.add(&input.value_comm, params.jubjub_params())
+		});
+	let (comm_x, comm_y) = aggregate_comm.to_xy();
 	let valid = groth16::verify_proof(
 		&params.range_verifying_key,
 		&bundle.proof,
-		&[change_comm_x, change_comm_y][..],
+		&[comm_x, comm_y][..],
 	)
 		.map_err(|err| Error::ProofSynthesis(err.to_string()))?;
 	if valid {
@@ -255,16 +259,20 @@ fn check_input_spend_proof<E>(
 	let (value_comm_x, value_comm_y) = input.value_comm.to_xy();
 	let (pubkey_base_x, pubkey_base_y) = bundle.pubkey.0.to_xy();
 	let (pubkey_raised_x, pubkey_raised_y) = bundle.pubkey.1.to_xy();
+	let nullifier_bits = multipack::bytes_to_bits_le(&input.nullifier[..]);
+
+	let mut public_inputs = vec![
+		anchor,
+		value_comm_x, value_comm_y,
+		pubkey_base_x, pubkey_base_y,
+		pubkey_raised_x, pubkey_raised_y,
+	];
+	public_inputs.extend(multipack::compute_multipacking::<E>(&nullifier_bits));
+
 	let valid = groth16::verify_proof(
 		&params.spend_verifying_key,
 		&input.proof,
-		&[
-			anchor,
-			value_comm_x, value_comm_y,
-			pubkey_base_x, pubkey_base_y,
-			pubkey_raised_x, pubkey_raised_y,
-			// TODO: nullifier
-		][..],
+		&public_inputs,
 	)
 		.map_err(|err| Error::ProofSynthesis(err.to_string()))?;
 	if valid {

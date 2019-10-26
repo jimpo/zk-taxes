@@ -11,7 +11,7 @@ use zcash_primitives::jubjub::{edwards, JubjubEngine, Unknown};
 pub type Value = u64;
 pub type Nullifier = [u8; 32];
 
-pub trait BlockNumber: Debug + Display + Decode<()> + Encode + Clone {}
+pub trait BlockNumber: Debug + Display + Decode<()> + Encode + Eq + Clone {}
 impl BlockNumber for u64 {}
 
 #[derive(PartialEq, Clone)]

@@ -6,14 +6,20 @@ use crate::constants::MERKLE_DEPTH;
 use crate::hasher::PedersenHasher;
 use crate::merkle_tree::IncrementalMerkleTree;
 use crate::proofs;
-use crate::wallet::{TransactionDesc, TransactionInputDesc, TransactionInputBundleDesc};
-use crate::validation::PublicParams;
+use crate::transaction::{BlockNumber, Nullifier, Value};
+use crate::wallet::{
+	TransactionDesc, TransactionInputDesc, TransactionInputBundleDesc, TransactionOutputDesc,
+};
+use crate::validation::{AccumulatorState, ChainState, PublicParams};
 
+use ff::Field;
 use pairing::bls12_381::Bls12;
 use rand::{CryptoRng, RngCore, SeedableRng, rngs::StdRng};
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::ops::Deref;
 use std::rc::Rc;
-use zcash_primitives::jubjub::{JubjubBls12, JubjubEngine};
+use zcash_primitives::jubjub::{FixedGenerators, JubjubBls12, JubjubEngine, JubjubParams};
 
 pub struct Harness<R>
 	where R: RngCore + CryptoRng
@@ -119,5 +125,110 @@ pub fn add_transaction_inputs<E, P>(
 {
 	for bundle_desc in tx_desc.inputs.iter() {
 		add_bundle_inputs(merkle_tree, bundle_desc, params);
+	}
+}
+
+pub struct TransactionValues {
+	pub input_values: Vec<TransactionInputBundleValues>,
+	pub output_values: Vec<Value>,
+	pub issuance: i64,
+}
+
+pub struct TransactionInputBundleValues {
+	pub input_values: Vec<Value>,
+	pub change_value: Value,
+}
+
+pub fn random_transaction_desc<E, R>(
+	start_position: u64,
+	credential: &UserCredential<E>,
+	transaction_values: TransactionValues,
+	params: &E::Params,
+	rng: &mut R,
+) -> TransactionDesc<E>
+	where
+		E: JubjubEngine,
+		R: RngCore,
+{
+	let mut position = start_position;
+	let generator = params.generator(FixedGenerators::SpendingKeyGenerator);
+
+	let input_bundles = transaction_values.input_values
+		.into_iter()
+		.map(|bundle_values| {
+			let privkey = E::Fs::random(rng);
+			let inputs = bundle_values.input_values
+				.into_iter()
+				.map(|input_value| {
+					let input_position = position;
+					position += 1;
+					TransactionInputDesc {
+						position: input_position,
+						value: input_value,
+						value_nonce: E::Fs::random(rng),
+						pubkey_base: generator.mul(E::Fs::random(rng), params).into(),
+					}
+				})
+				.collect::<Vec<_>>();
+			TransactionInputBundleDesc {
+				privkey,
+				change_value: bundle_values.change_value,
+				inputs,
+			}
+		})
+		.collect::<Vec<_>>();
+	let outputs = transaction_values.output_values
+		.into_iter()
+		.map(|output_value| {
+			TransactionOutputDesc {
+				value: output_value,
+				credential: credential.clone(),
+			}
+		})
+		.collect::<Vec<_>>();
+	TransactionDesc {
+		inputs: input_bundles,
+		outputs,
+		issuance: transaction_values.issuance,
+	}
+}
+
+pub struct MockChainState<AS, BN>
+	where
+		BN: BlockNumber + Hash,
+{
+	accumulator_states: HashMap<BN, AS>,
+	nullifier_set: HashSet<Nullifier>,
+}
+
+impl<AS, BN> MockChainState<AS, BN>
+	where
+		BN: BlockNumber + Hash,
+{
+	pub fn new<ASI, NI>(accumulator_state_iter: ASI, nullifier_set_iter: NI) -> Self
+		where
+			ASI: IntoIterator<Item=(BN, AS)>,
+			NI: IntoIterator<Item=Nullifier>,
+	{
+		MockChainState {
+			accumulator_states: accumulator_state_iter.into_iter().collect(),
+			nullifier_set: nullifier_set_iter.into_iter().collect(),
+		}
+	}
+}
+
+impl<E, BN> ChainState<E> for MockChainState<AccumulatorState<E>, BN>
+	where
+		E: JubjubEngine,
+		BN: BlockNumber + Hash,
+{
+	type BlockNumber = BN;
+
+	fn accumulator_state_at_height(&self, block_number: &BN) -> Option<AccumulatorState<E>> {
+		self.accumulator_states.get(block_number).cloned()
+	}
+
+	fn nullifier_exists(&self, nullifier: &Nullifier) -> bool {
+		self.nullifier_set.contains(nullifier)
 	}
 }
