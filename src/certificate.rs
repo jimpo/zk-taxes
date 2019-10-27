@@ -7,19 +7,19 @@ use crate::codec::{
 };
 use crate::proofs::certificate as certificate_proof;
 
-use bellman::groth16;
+use bellman::{SynthesisError, groth16};
 use blake2::{VarBlake2b, digest::{Input, VariableOutput}};
 use byteorder::{ByteOrder, LittleEndian};
 use ff::{BitIterator, Field, PrimeField, PrimeFieldRepr};
 use group::{CurveAffine, CurveProjective};
 use rand::{CryptoRng, RngCore};
 use std::fmt::{self, Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 use zcash_primitives::jubjub::{
 	edwards, FixedGenerators, JubjubEngine, PrimeOrder, JubjubParams, Unknown,
 };
-use bellman::SynthesisError;
 
 /// An element of the embedded elliptic curve group G_3.
 type G3<E> = edwards::Point<E, Unknown>;
@@ -115,6 +115,33 @@ pub struct AuthorityPublicKey<E>
 	t_g3: G3<E>,  // Tracing public key
 }
 
+/// A user ID.
+#[derive(Clone, Copy, Debug)]
+pub struct UserID<E: JubjubEngine>(E::Fr);
+
+impl<E> PartialEq for UserID<E>
+	where E: JubjubEngine
+{
+	fn eq(&self, other: &Self) -> bool {
+		self.0 == other.0
+	}
+}
+
+impl<E> Eq for UserID<E>
+	where E: JubjubEngine
+{}
+
+impl<E> Hash for UserID<E>
+	where E: JubjubEngine
+{
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		let mut bytes = Vec::new();
+		self.0.into_repr().write_le(&mut bytes)
+			.expect("writing to Vec must not fail");
+		state.write(&bytes);
+	}
+}
+
 /// The user's private key.
 pub struct UserKey<E>
 	where E: JubjubEngine
@@ -205,8 +232,8 @@ impl<E> Decode<E::Params> for AnonymousCertificate<E>
 impl<E> UserKey<E>
 	where E: JubjubEngine
 {
-	pub fn id(&self) -> E::Fr {
-		self.k_g3.to_xy().1
+	pub fn id(&self) -> UserID<E> {
+		UserID(self.k_g3.to_xy().1)
 	}
 
 	/// Determines if a randomized public key corresponds to this private key.
@@ -225,8 +252,8 @@ impl<E> UserKey<E>
 impl<E> UserCredential<E>
 	where E: JubjubEngine
 {
-	pub fn id(&self) -> E::Fr {
-		self.k_g3.to_xy().1
+	pub fn id(&self) -> UserID<E> {
+		UserID(self.k_g3.to_xy().1)
 	}
 }
 
@@ -287,13 +314,13 @@ pub fn issue_credential<E, R>(
 	rng: &mut R,
 	params: &PublicParams<E>,
 	authority_key: &AuthorityKey<E>,
-	id: E::Fr,
+	id: UserID<E>,
 ) -> Result<UserCredential<E>, Error>
 	where
 		E: JubjubEngine,
 		R: RngCore + CryptoRng,
 {
-	let k_g3 = edwards::Point::get_for_y(id, false, params.jubjub_params())
+	let k_g3 = edwards::Point::get_for_y(id.0, false, params.jubjub_params())
 		.ok_or(Error::InvalidID)?;
 
 	// U = G1^u
@@ -301,7 +328,7 @@ pub fn issue_credential<E, R>(
 	let u_g1 = params.g1.mul(u);
 
 	// V = U^(x + y * id)
-	let mut v = id;
+	let mut v = id.0;
 	v.mul_assign(&authority_key.y);
 	v.add_assign(&authority_key.x);
 	let mut v_g1 = u_g1.clone();
@@ -327,7 +354,7 @@ pub fn verify_credential<E>(
 {
 	// e(σ_1, X * Y^id) = e(σ_2, G2)
 	let mut lhs_g2 = authority_pubkey.y_g2.clone();
-	lhs_g2.mul_assign(cert.id().into_repr());
+	lhs_g2.mul_assign(cert.id().0.into_repr());
 	lhs_g2.add_assign(&authority_pubkey.x_g2);
 
 	let lhs = E::pairing(cert.sigma.0.clone(), lhs_g2);
@@ -467,7 +494,7 @@ pub fn issue_certificate<E, R>(
 	// Sigma proof scalars
 
 	// s_id = r_id + c * id
-	let mut s_id = credential.id();
+	let mut s_id = credential.id().0;
 	s_id.mul_assign(&c);
 	s_id.add_assign(&r_id);
 
@@ -596,7 +623,7 @@ pub fn trace_certificate<E>(
 	params: &PublicParams<E>,
 	authority_key: &AuthorityKey<E>,
 	cert: &AnonymousCertificate<E>,
-) -> E::Fr
+) -> UserID<E>
 	where E: JubjubEngine
 {
 	// K = τ * P_1^{-t}
@@ -607,7 +634,7 @@ pub fn trace_certificate<E>(
 		.mul(neg_t, params.jubjub_params())
 		.add(&cert.tau, &params.jubjub_params);
 
-	k_g3.to_xy().1
+	UserID(k_g3.to_xy().1)
 }
 
 /// Interpret a 32-byte hash output as a scalar.
