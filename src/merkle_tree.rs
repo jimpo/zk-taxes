@@ -1,9 +1,10 @@
+/// The incremental Merkle tree used as an accumulator in the system.
+
 use std::collections::HashMap;
 use std::cmp::min;
 use std::fmt::{self, Display, Formatter};
 
-use crate::hasher::MerkleHasher;
-
+/// An error that can be encountered when reconstructing a Merkle tree.
 #[derive(Debug)]
 pub enum Error {
     InvalidSubtreeRoots,
@@ -19,6 +20,18 @@ impl Display for Error {
 
 impl std::error::Error for Error {}
 
+/// A hash function for hashing leaves and nodes in a binary Merkle tree.
+pub trait MerkleHasher {
+    type Out: Default + PartialEq + Eq + Send + Sync + Clone + Copy;
+
+    fn uncommitted(&self) -> Self::Out;
+    fn hash_leaf(&self, data: &[u8]) -> Self::Out;
+    fn hash_internal(&self, height: usize, left: &Self::Out, right: &Self::Out) -> Self::Out;
+}
+
+/// The incremental Merkle tree used as an accumulator in the system.
+///
+/// This is the same structure as is used in ZCash and the tests are ported from ZCash.
 pub struct IncrementalMerkleTree<Hasher>
     where Hasher: MerkleHasher
 {

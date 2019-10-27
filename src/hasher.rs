@@ -1,3 +1,7 @@
+/// Implementations of MerkleHasher used in thy system.
+
+use crate::merkle_tree::MerkleHasher;
+
 use ff::{self, Field, PrimeField};
 use zcash_primitives::{
     jubjub::JubjubEngine,
@@ -6,14 +10,7 @@ use zcash_primitives::{
 use std::marker::PhantomData;
 use std::ops::Deref;
 
-pub trait MerkleHasher {
-    type Out: Default + PartialEq + Eq + Send + Sync + Clone + Copy;
-
-    fn uncommitted(&self) -> Self::Out;
-    fn hash_leaf(&self, data: &[u8]) -> Self::Out;
-    fn hash_internal(&self, height: usize, left: &Self::Out, right: &Self::Out) -> Self::Out;
-}
-
+/// The Pedersen hash function as defined by the ZCash specification.
 pub struct PedersenHasher<E, P>
     where
         E: JubjubEngine,
@@ -82,26 +79,6 @@ impl<E, P> PedersenHasher<E, P>
             _engine_marker: PhantomData::default(),
         }
     }
-
-//    fn point_to_hash(&self, pt: &edwards::Point<E, PrimeOrder>) -> <Self as MerkleHasher>::Out {
-//        self.field_element_to_hash(pt.into_xy().0)
-//    }
-//
-//    fn field_element_to_hash(&self, x: E::Fr) -> <Self as MerkleHasher>::Out {
-//        let mut result = H256::default();
-//        x.into_repr().write_le(result.as_mut())
-//            .expect("the field element representation is 32 bytes");
-//        result
-//    }
-//
-//    fn field_element_read_le(&self, hash: &<Self as MerkleHasher>::Out)
-//        -> <E::Fr as PrimeField>::Repr
-//    {
-//        let mut repr = <E::Fr as PrimeField>::Repr::default();
-//        repr.read_le(hash.as_ref())
-//            .expect("the field element representation is 32 bytes");
-//        repr
-//    }
 }
 
 struct BitIterator<'a> {

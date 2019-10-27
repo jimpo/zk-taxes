@@ -1,12 +1,16 @@
+/// Traits used for byte de/encoding.
+
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use ff::{PrimeField, PrimeFieldRepr};
 use group::{CurveAffine, EncodedPoint};
 use std::io::{self, Read, Write};
 
+/// A type with this trait can be decoded from a byte sequence.
 pub trait Decode<P>: Sized {
 	fn read<R: Read>(reader: R, params: &P) -> io::Result<Self>;
 }
 
+/// A type with this trait can be encoded into a byte sequence.
 pub trait Encode {
 	fn write<W: Write>(&self, writer: W) -> io::Result<()>;
 }

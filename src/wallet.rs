@@ -1,3 +1,5 @@
+/// Operations that a user performs locally to generate and identify transactions.
+
 use bellman::{SynthesisError, groth16::create_random_proof};
 use ff::{Field, PrimeField};
 use pairing::Engine;
@@ -7,15 +9,15 @@ use std::ops::Deref;
 use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown};
 
 use crate::certificate::{UserCredential, issue_certificate, verify_credential};
-use crate::constants::MERKLE_DEPTH;
-use crate::hasher::{PedersenHasher, MerkleHasher};
-use crate::merkle_tree::IncrementalMerkleTree;
+use crate::hasher::PedersenHasher;
+use crate::merkle_tree::{MerkleHasher, IncrementalMerkleTree};
 use crate::proofs::{range, spend};
-use crate::transaction::{
+use crate::primitives::{
+	MERKLE_DEPTH,
 	BlockNumber, Coin, Nullifier, Value,
 	Transaction, TransactionInput, TransactionOutput, TransactionInputBundle,
+	compute_nullifier, value_commitment,
 };
-use crate::util::{compute_nullifier, value_commitment};
 use crate::validation::{self, PublicParams};
 
 #[derive(Debug, PartialEq)]

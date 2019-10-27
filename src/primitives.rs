@@ -1,18 +1,37 @@
+/// Primitive constants, types, and traits.
+
 use crate::certificate::AnonymousCertificate;
-use crate::codec::{Decode, Encode, invalid_data_io_error};
+use crate::codec::{Decode, Encode, invalid_data_io_error, write_prime_field_le};
 
 use bellman::groth16::Proof;
+use blake2s_simd::Params as Blake2sParams;
 use byteorder::{LittleEndian, ByteOrder};
+use ff::{PrimeField, ScalarEngine};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Display};
 use std::io::{self, Read, Write};
-use zcash_primitives::jubjub::{edwards, JubjubEngine, Unknown};
+use zcash_primitives::jubjub::{
+	edwards, FixedGenerators, JubjubEngine, JubjubParams, PrimeOrder, Unknown,
+};
 
+/// Depth of the incremental Merkle tree.
+pub const MERKLE_DEPTH: usize = 32;
+
+/// Hash function personalization for computing nullifiers.
+pub const PRF_NF_PERSONALIZATION: &'static [u8; 8] = b"ZkTax_nf";
+
+/// A monetary value.
 pub type Value = u64;
+
+/// A nullifier, which is a PRF output uniquely and secretly derived from a coin.
 pub type Nullifier = [u8; 32];
 
+/// The numeric index of a block, which is its height in the chain.
 pub trait BlockNumber: Debug + Display + Decode<()> + Encode + Eq + Clone {}
 impl BlockNumber for u64 {}
+
+/// The accumulator (ie. Merkle root).
+pub type AccumulatorState<E> = <<E as ScalarEngine>::Fr as PrimeField>::Repr;
 
 #[derive(PartialEq, Clone)]
 pub struct Transaction<E, BN>
@@ -252,3 +271,25 @@ impl<E> Coin<E>
 	}
 }
 
+pub fn value_commitment<E>(value: Value, nonce: &E::Fs, params: &E::Params)
+						   -> edwards::Point<E, PrimeOrder>
+	where E: JubjubEngine
+{
+	let g = params.generator(FixedGenerators::ValueCommitmentValue);
+	let h = params.generator(FixedGenerators::ValueCommitmentRandomness);
+	g.mul(value, params).add(&h.mul(nonce.into_repr(), params), params)
+}
+
+pub fn compute_nullifier<PF>(privkey: &PF, position: u64) -> Nullifier
+	where PF: PrimeField
+{
+	let mut hasher = Blake2sParams::new()
+		.hash_length(32)
+		.personal(PRF_NF_PERSONALIZATION)
+		.to_state();
+	write_prime_field_le(&mut hasher, privkey)
+		.expect("writing to hasher cannot return an error");
+	position.write(&mut hasher)
+		.expect("writing to hasher cannot return an error");
+	*hasher.finalize().as_array()
+}

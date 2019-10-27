@@ -1,3 +1,5 @@
+/// The Traceable Anonymous Certificate (TAC) cryptographic primitive.
+
 use crate::codec::{
 	Encode, Decode,
 	read_curve_affine_compressed, write_curve_affine_compressed,
@@ -22,6 +24,7 @@ use bellman::SynthesisError;
 /// An element of the embedded elliptic curve group G_3.
 type G3<E> = edwards::Point<E, Unknown>;
 
+/// An error that may occur during TAC operations.
 #[derive(Debug)]
 pub enum Error {
 	InvalidID,
@@ -46,6 +49,7 @@ impl std::error::Error for Error {
 	}
 }
 
+/// The public parameters common to all TAC operations.
 pub struct PublicParams<E>
 	where E: JubjubEngine
 {
@@ -83,6 +87,7 @@ impl<E> PublicParams<E>
 	}
 }
 
+/// The authority private key from which the public key can be derived.
 pub struct AuthorityKey<E>
 	where E: JubjubEngine
 {
@@ -100,6 +105,7 @@ impl<E> AuthorityKey<E>
 	}
 }
 
+/// The authority public key.
 #[derive(Clone)]
 pub struct AuthorityPublicKey<E>
 	where E: JubjubEngine
@@ -109,6 +115,7 @@ pub struct AuthorityPublicKey<E>
 	t_g3: G3<E>,  // Tracing public key
 }
 
+/// The user's private key.
 pub struct UserKey<E>
 	where E: JubjubEngine
 {
@@ -118,6 +125,9 @@ pub struct UserKey<E>
 	k_g3: G3<E>,
 }
 
+/// The user's issued credential which can be used to issue certificates.
+///
+/// This credential is safe to share publicly as it does not contain the user private key.
 #[derive(Clone)]
 pub struct UserCredential<E>
 	where E: JubjubEngine
@@ -126,6 +136,7 @@ pub struct UserCredential<E>
 	sigma: (E::G1, E::G1),
 }
 
+/// A traceable anonymous certificate.
 #[derive(PartialEq, Clone)]
 pub struct AnonymousCertificate<E>
 	where E: JubjubEngine
@@ -230,6 +241,11 @@ pub fn gen_user_key<E, R>(rng: &mut R, params: &PublicParams<E>) -> UserKey<E>
 	}
 }
 
+/// Generates an authority key pair.
+///
+/// The group manager chooses scalars x, y, and t. The public key consists of
+/// X = G2^x, Y = G2^y, and T = G3^t. X and Y are used as in Pointcheval-Sanders signatures and T
+/// is the tracing key that El-Gamal ciphertexts are encrypted to.
 pub fn gen_authority_key<E, R>(rng: &mut R, params: &PublicParams<E>) -> AuthorityKey<E>
 	where
 		E: JubjubEngine,
@@ -250,13 +266,11 @@ pub fn gen_authority_key<E, R>(rng: &mut R, params: &PublicParams<E>) -> Authori
 	}
 }
 
-/**
-* The authority issues a new user credential.
-*
-* The user provides an id in as an element of F_r, generated using `gen_user_key`. The authority
-* chooses a random scalar u. The key consists of id, U = G1^u, V = U^(x + y * id), where (U, V) is
-* a Pointcheval-Sanders signature on id.
-*/
+/// The authority issues a new user credential.
+///
+/// The user provides an id in as an element of F_r, generated using `gen_user_key`. The authority
+/// chooses a random scalar u. The key consists of id, U = G1^u, V = U^(x + y * id), where (U, V) is
+/// a Pointcheval-Sanders signature on id.
 pub fn issue_credential<E, R>(
 	rng: &mut R,
 	params: &PublicParams<E>,
@@ -287,13 +301,11 @@ pub fn issue_credential<E, R>(
 	})
 }
 
-/**
-* Verify that a user credential is valid with respect to some authority.
-*
-* They check that the relation holds:
-*
-* e(σ_1, X * Y^id) = e(σ_2, G2)
-*/
+/// Verify that a user credential is valid with respect to some authority.
+///
+/// They check that the relation holds:
+///
+/// e(σ_1, X * Y^id) = e(σ_2, G2)
 pub fn verify_credential<E>(
 	params: &PublicParams<E>,
 	authority_pubkey: &AuthorityPublicKey<E>,
@@ -311,54 +323,55 @@ pub fn verify_credential<E>(
 	lhs == rhs
 }
 
-/**
-* Issue a new traceable anonymous certificate from a public credential.
-*
-* The issuer chooses scalars a, b, n. a, b are used to randomize σ issued by the group manager and
-* n is the nonce used in the El-Gamal encryption. The member computes:
-*
-* A = σ_1^a
-* B = (σ_2 * σ_1^b)^a
-* P = (G3^n, K^n)
-* τ = K * T^n
-*
-* NOTE: Using n as both the ElGamal nonce and pubkey blinding factor is an optimization and needs
-* to be analyzed for security.
-*
-* P is a randomized public key of the credential owner, and τ along with P is an El-Gamal
-* encryption of K.
-*
-* The member then produces hybrid zero-knowledge proof of knowledge:
-*
-* The member uses a zk-SNARK with private inputs K, n and committed input id to prove
-*
-* K has id as its y coordinate and its x coordinate is even
-* P_1 = G3^n
-* P_2 = K^n
-* τ = K * T^n
-*
-* The member then uses a sigma proof to prove knowledge of id, a, b satisfying
-*
-* e(A, G2^b * X * Y^id) = e(B, G2)
-*
-* as well as q, the blinding factor on the D element from the zk-SNARK.
-*
-* The committed input wire of the zk-SNARK takes the value id.
-*
-* The member chooses scalars r_v, r_k, r_m and computes:
-*
-* R_e = e(A, G2^r_b * Y^r_id)
-* R_D = H_1^id * H_2^q
-*
-* The member computes the random oracle challenge
-*
-* c = HashToScalar(msg || A || B || D || R_e || R_D)
-*
-* The Sigma proof consists of A, B, R_e, R_D, c, s_id, s_q where
-*
-* s_id = r_id + c * id
-* s_q = r_q + c * q
-*/
+/// Issue a new traceable anonymous certificate from a public credential.
+///
+/// The issuer chooses scalars a, b, n. a, b are used to randomize σ issued by the group manager and
+/// n is the nonce used in the El-Gamal encryption. The member computes:
+///
+/// A = σ_1^a
+/// B = (σ_2 * σ_1^b)^a
+/// P = (G3^n, K^n)
+/// τ = K * T^n
+///
+/// TODO: Using n as both the ElGamal nonce and pubkey blinding factor is an optimization and needs
+/// to be analyzed for security.
+///
+/// P is a randomized public key of the credential owner, and τ along with P is an El-Gamal
+/// encryption of K.
+///
+/// The member then produces hybrid zero-knowledge proof of knowledge:
+///
+/// The member uses a zk-SNARK with private inputs K, n and committed input id to prove
+///
+/// K has id as its y coordinate and its x coordinate is even
+/// P_1 = G3^n
+/// P_2 = K^n
+/// τ = K * T^n
+///
+/// The member then uses a sigma proof to prove knowledge of id, a, b satisfying
+///
+/// e(A, G2^b * X * Y^id) = e(B, G2)
+///
+/// as well as q, the blinding factor on the D element from the zk-SNARK.
+///
+/// The committed input wire of the zk-SNARK takes the value id.
+///
+/// The member chooses scalars r_v, r_k, r_m and computes:
+///
+/// R_e = e(A, G2^r_b * Y^r_id)
+/// R_D = H_1^id * H_2^q
+///
+/// where H_1, H_2 are the group elements from the zk-SNARK CRS used to compute D.
+///
+/// The member computes the random oracle challenge
+///
+/// c = HashToScalar(msg || A || B || D || R_e || R_D)
+///
+/// The Sigma proof consists of A, B, R_e, R_D, c, s_id, s_b, s_q where
+///
+/// s_id = r_id + c * id
+/// s_b = r_b + c * b
+/// s_q = r_q + c * q
 pub fn issue_certificate<E, R>(
 	rng: &mut R,
 	params: &PublicParams<E>,
@@ -488,17 +501,15 @@ fn compute_challenge<E>(
 	hash_result_scalar(hash)
 }
 
-/**
-* Verify a traceable anonymous certificate.
-*
-* The verifier computes:
-*
-* \hat R_e = e(σ_1, G2^s_b * X^c * Y^s_id) / e(σ_2, G2)^c
-* \hat R_D = H_1^s_id * H_2^s_q / D^c
-* \hat c = HashToScalar(msg || σ_1 || σ_2 || D || \hat R_e || \hat R_D)
-*
-* then checks that \hat c = c.
-*/
+/// Verify a traceable anonymous certificate.
+///
+/// The verifier computes:
+///
+/// \hat R_e = e(σ_1, G2^s_b * X^c * Y^s_id) / e(σ_2, G2)^c
+/// \hat R_D = H_1^s_id * H_2^s_q / D^c
+/// \hat c = HashToScalar(msg || σ_1 || σ_2 || D || \hat R_e || \hat R_D)
+///
+/// then checks that \hat c = c.
 pub fn verify_certificate<E>(
 	params: &PublicParams<E>,
 	authority_pubkey: &AuthorityPublicKey<E>,
@@ -566,11 +577,9 @@ pub fn verify_certificate<E>(
 		.map_err(Error::ProofSynthesis)
 }
 
-/**
-* The authority determines the user ID of the certificate.
-*
-* The user's identity is the decryption of the El-Gamal ciphertext τ in the signature.
-*/
+/// The authority determines the user ID of the certificate.
+///
+/// The user's identity is the decryption of the El-Gamal ciphertext τ in the signature.
 pub fn trace_certificate<E>(
 	params: &PublicParams<E>,
 	authority_key: &AuthorityKey<E>,
@@ -589,11 +598,9 @@ pub fn trace_certificate<E>(
 	k_g3.to_xy().1
 }
 
-/**
-* Interpret a 32-byte hash output as a scalar.
-*
-* See to_uniform and hash_to_scalar in the sapling-crypto crate.
-*/
+/// Interpret a 32-byte hash output as a scalar.
+///
+/// See to_uniform and hash_to_scalar in the sapling-crypto crate.
 fn hash_result_scalar<F: Field, H: VariableOutput>(hash: H) -> F {
 	let one = F::one();
 

@@ -2,15 +2,14 @@ use crate::certificate::{
 	AuthorityKey, PublicParams as CertificateParams, UserCredential, UserKey,
 	gen_authority_key, gen_user_key, issue_credential,
 };
-use crate::constants::MERKLE_DEPTH;
 use crate::hasher::PedersenHasher;
 use crate::merkle_tree::IncrementalMerkleTree;
+use crate::primitives::{AccumulatorState, BlockNumber, Nullifier, Value, MERKLE_DEPTH};
 use crate::proofs;
-use crate::transaction::{BlockNumber, Nullifier, Value};
 use crate::wallet::{
 	TransactionDesc, TransactionInputDesc, TransactionInputBundleDesc, TransactionOutputDesc,
 };
-use crate::validation::{AccumulatorState, ChainState, PublicParams};
+use crate::validation::{ChainState, PublicParams};
 
 use ff::Field;
 use pairing::bls12_381::Bls12;

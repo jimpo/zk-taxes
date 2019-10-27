@@ -1,4 +1,4 @@
-use crate::transaction::Value;
+use crate::primitives::Value;
 
 use bellman::{self, SynthesisError, ConstraintSystem, gadgets::boolean};
 use zcash_primitives::jubjub::{FixedGenerators, JubjubEngine};
@@ -87,8 +87,8 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::primitives::value_commitment;
 	use crate::proofs::tests::range_params;
-	use crate::util::value_commitment;
 
 	use bellman::{Circuit as CircuitT, gadgets::test::TestConstraintSystem, groth16};
 	use ff::Field;

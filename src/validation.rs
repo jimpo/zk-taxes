@@ -1,3 +1,5 @@
+/// Exports functions and structs that define and verify transaction validity.
+
 use bellman::{gadgets::multipack, groth16};
 use ff::{PrimeField, ScalarEngine};
 use std::cmp;
@@ -9,11 +11,12 @@ use crate::certificate::{
 	AuthorityPublicKey, Error as CertificateError, PublicParams as CertificateParams,
 	verify_certificate,
 };
-use crate::transaction::{
-	BlockNumber, Nullifier,
+use crate::primitives::{
+	AccumulatorState, BlockNumber, Nullifier,
 	Transaction, TransactionInputBundle, TransactionInput, TransactionOutput,
 };
 
+/// An error encountered during transaction validation.
 #[derive(Debug, PartialEq)]
 pub enum Error {
 	ValueOverflow,
@@ -59,9 +62,6 @@ impl Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-/// The accumulator (ie. Merkle root).
-pub type AccumulatorState<E> = <<E as ScalarEngine>::Fr as PrimeField>::Repr;
 
 /// Trait for querying parts of the blockchain state.
 pub trait ChainState<E>

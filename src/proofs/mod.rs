@@ -1,10 +1,12 @@
+/// Defines zk-SNARK proof circuits.
+
 pub mod certificate;
 pub mod range;
 pub mod spend;
 
 pub mod tests {
 	use super::*;
-	use crate::constants::MERKLE_DEPTH;
+	use crate::primitives::MERKLE_DEPTH;
 
 	use bellman::groth16::{generate_random_parameters, Parameters};
 	use pairing::bls12_381::Bls12;

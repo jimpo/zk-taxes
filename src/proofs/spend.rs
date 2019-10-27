@@ -1,5 +1,4 @@
-use crate::constants;
-use crate::transaction::{Nullifier, Value};
+use crate::primitives::{Nullifier, Value, PRF_NF_PERSONALIZATION};
 
 use bellman::{
 	self, SynthesisError, ConstraintSystem,
@@ -291,7 +290,7 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 		let nullifier = blake2s::blake2s(
 			cs.namespace(|| "nullifier computation"),
 			&nullifier_preimage,
-			constants::PRF_NF_PERSONALIZATION
+			PRF_NF_PERSONALIZATION
 		)?;
 
 		// Expose the anchor.
@@ -313,12 +312,10 @@ impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 mod tests {
 	use super::*;
 
-	use crate::constants::MERKLE_DEPTH;
 	use crate::hasher::PedersenHasher;
 	use crate::merkle_tree::IncrementalMerkleTree;
+	use crate::primitives::{MERKLE_DEPTH, Coin, compute_nullifier, value_commitment};
 	use crate::proofs::tests::spend_params;
-	use crate::transaction::Coin;
-	use crate::util::{compute_nullifier, value_commitment};
 
 	use bellman::{Circuit as CircuitT, gadgets::test::TestConstraintSystem, groth16};
 	use ff::{PrimeField, ScalarEngine};
