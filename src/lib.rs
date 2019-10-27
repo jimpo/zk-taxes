@@ -1,3 +1,4 @@
+pub mod authority;
 pub mod certificate;
 pub mod codec;
 pub mod hasher;

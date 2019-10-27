@@ -208,6 +208,18 @@ impl<E> UserKey<E>
 	pub fn id(&self) -> E::Fr {
 		self.k_g3.to_xy().1
 	}
+
+	/// Determines if a randomized public key corresponds to this private key.
+	fn owns_pubkey(&self, pubkey: &(G3<E>, G3<E>), params: &E::Params) -> bool {
+		pubkey.0.mul(self.k.into_repr(), params) == pubkey.1
+	}
+
+	/// Determines if a certificate corresponds to this private key.
+	pub fn owns_certificate(&self, certificate: &AnonymousCertificate<E>, params: &E::Params)
+		-> bool
+	{
+		self.owns_pubkey(&certificate.pk, params)
+	}
 }
 
 impl<E> UserCredential<E>
@@ -663,7 +675,23 @@ mod tests {
 	use super::*;
 	use super::test_support::Harness;
 
+	use pairing::bls12_381::Bls12;
 	use rand::{SeedableRng, rngs::StdRng};
+
+	#[test]
+	fn user_key_owns_pubkey() {
+		let mut t = Harness::new(StdRng::seed_from_u64(0));
+
+		let blinding_factor = <Bls12 as JubjubEngine>::Fs::random(&mut t.rng);
+		let pubkey_base = t.params.g3.mul(blinding_factor, t.params.jubjub_params());
+		let pubkey_raised = t.user_key.k_g3.mul(blinding_factor, t.params.jubjub_params());
+
+		let mut randomized_pubkey = (pubkey_base.into(), pubkey_raised);
+		assert!(t.user_key.owns_pubkey(&randomized_pubkey, t.params.jubjub_params()));
+
+		randomized_pubkey.1 = randomized_pubkey.1.double(t.params.jubjub_params());
+		assert!(!t.user_key.owns_pubkey(&randomized_pubkey, t.params.jubjub_params()));
+	}
 
 	#[test]
 	fn end_to_end() {
@@ -679,6 +707,10 @@ mod tests {
 		assert!(verify_certificate(
 			&t.params, &t.authority_key.pubkey, &certificate,
 		).unwrap());
+
+		let other_user_key = gen_user_key(&mut t.rng, &t.params);
+		assert!(t.user_key.owns_certificate(&certificate, t.params.jubjub_params()));
+		assert!(!other_user_key.owns_certificate(&certificate, t.params.jubjub_params()));
 
 		let traced_id = trace_certificate(&t.params, &t.authority_key, &certificate);
 		assert_eq!(traced_id, t.user_key.id());

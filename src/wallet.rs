@@ -8,7 +8,7 @@ use std::fmt::{self, Display, Formatter};
 use std::ops::Deref;
 use zcash_primitives::jubjub::{edwards, FixedGenerators, JubjubEngine, JubjubParams, Unknown};
 
-use crate::certificate::{UserCredential, issue_certificate, verify_credential};
+use crate::certificate::{UserKey, UserCredential, issue_certificate, verify_credential};
 use crate::hasher::PedersenHasher;
 use crate::merkle_tree::{MerkleHasher, IncrementalMerkleTree};
 use crate::proofs::{range, spend};
@@ -523,6 +523,26 @@ impl<E> UnprovenTransactionInputBundle<E>
 			proof,
 		})
 	}
+}
+
+/// Scans a transaction's outputs for those belonging to a user key and returns their indices.
+pub fn identify_outputs<E, BN>(
+	transaction: &Transaction<E, BN>,
+	key: &UserKey<E>,
+	params: &E::Params,
+) -> Vec<usize>
+	where E: JubjubEngine
+{
+	transaction.outputs.iter()
+		.enumerate()
+		.filter_map(|(i, output)| {
+			if key.owns_certificate(&output.certificate, params) {
+				Some(i)
+			} else {
+				None
+			}
+		})
+		.collect()
 }
 
 fn is_low_order<E>(pt: &edwards::Point<E, Unknown>, params: &E::Params) -> bool
