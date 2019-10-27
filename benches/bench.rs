@@ -42,7 +42,7 @@ fn bench_issue_certificate(b: &mut Bencher) {
 	let credential = issue_credential(&mut t.rng, &t.params, &t.authority_key, t.user_key.id())
 		.unwrap();
 
-	b.auto_bench(|_b| {
+	b.iter(|| {
 		issue_certificate(&mut t.rng, &t.params, t.authority_key.pubkey(), &credential)
 			.unwrap();
 	});
@@ -82,7 +82,7 @@ fn bench_generate_range_proof(b: &mut Bencher) {
 
 	let proof_params = range_params().unwrap();
 
-	b.auto_bench(|_b| {
+	b.iter(|| {
 		groth16::create_random_proof(circuit.clone(), &proof_params, None, &mut rng)
 			.unwrap();
 	});
@@ -111,7 +111,7 @@ fn bench_generate_spend_proof(b: &mut Bencher) {
 
 	let proof_params = spend_params().unwrap();
 
-	b.auto_bench(|_b| {
+	b.iter(|| {
 		groth16::create_random_proof(circuit.clone(), &proof_params, None, &mut rng)
 			.unwrap();
 	});
