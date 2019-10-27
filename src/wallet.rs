@@ -290,6 +290,7 @@ impl<E, BN> UnprovenTransaction<E, BN>
 		E: JubjubEngine,
 		BN: BlockNumber,
 {
+	#[allow(dead_code)]
 	fn validate_assignments<P>(
 		&self,
 		merkle_tree: &IncrementalMerkleTree<PedersenHasher<E, P>>,

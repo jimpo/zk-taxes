@@ -56,6 +56,18 @@ impl<'a, E> Circuit<'a, E>
 	}
 }
 
+impl<'a, E> Clone for Circuit<'a, E>
+	where E: JubjubEngine
+{
+	fn clone(&self) -> Self {
+		Circuit {
+			params: self.params,
+			merkle_depth: self.merkle_depth,
+			assigned: self.assigned.clone(),
+		}
+	}
+}
+
 fn num_from_bits_le<E, CS>(value_bits: &[boolean::Boolean]) -> num::Num<E>
 	where
 		E: JubjubEngine,

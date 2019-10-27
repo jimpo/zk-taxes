@@ -621,38 +621,66 @@ fn hash_result_scalar<F: Field, H: VariableOutput>(hash: H) -> F {
 	ret
 }
 
-#[cfg(test)]
-mod tests {
+pub mod test_support {
 	use super::*;
 
 	use crate::proofs;
 
-	use rand::{SeedableRng, rngs::StdRng};
+	use pairing::bls12_381::Bls12;
 	use zcash_primitives::jubjub::JubjubBls12;
+
+	pub struct Harness<R>
+		where R: RngCore + CryptoRng
+	{
+		pub rng: R,
+		pub params: PublicParams<Bls12>,
+		pub authority_key: AuthorityKey<Bls12>,
+		pub user_key: UserKey<Bls12>,
+	}
+
+	impl<R> Harness<R>
+		where R: RngCore + CryptoRng
+	{
+		pub fn new(mut rng: R) -> Self {
+			let params = PublicParams::new(
+				Rc::new(JubjubBls12::new()),
+				proofs::tests::certificate_params().unwrap(),
+			);
+			let authority_key = gen_authority_key(&mut rng, &params);
+			let user_key = gen_user_key(&mut rng, &params);
+			Harness {
+				rng,
+				params,
+				authority_key,
+				user_key,
+			}
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use super::test_support::Harness;
+
+	use rand::{SeedableRng, rngs::StdRng};
 
 	#[test]
 	fn end_to_end() {
-		let jubjub_params = Rc::new(JubjubBls12::new());
-		let proof_params = proofs::tests::certificate_params().unwrap();
-		let params = PublicParams::new(jubjub_params, proof_params);
-		let mut rng = StdRng::seed_from_u64(0);
+		let mut t = Harness::new(StdRng::seed_from_u64(0));
 
-		let authority_key = gen_authority_key(&mut rng, &params);
-		let user_key = gen_user_key(&mut rng, &params);
-
-		let credential = issue_credential(&mut rng, &params, &authority_key, user_key.id())
+		let credential = issue_credential(&mut t.rng, &t.params, &t.authority_key, t.user_key.id())
 			.unwrap();
-		assert!(verify_credential(&params, &authority_key.pubkey, &credential));
+		assert!(verify_credential(&t.params, &t.authority_key.pubkey, &credential));
 
-		let certificate = issue_certificate(&mut rng, &params, &authority_key.pubkey, &credential)
-			.unwrap();
+		let certificate = issue_certificate(
+			&mut t.rng, &t.params, &t.authority_key.pubkey, &credential,
+		).unwrap();
 		assert!(verify_certificate(
-			&params,
-			&authority_key.pubkey,
-			&certificate,
+			&t.params, &t.authority_key.pubkey, &certificate,
 		).unwrap());
 
-		let traced_id = trace_certificate(&params, &authority_key, &certificate);
-		assert_eq!(traced_id, user_key.id());
+		let traced_id = trace_certificate(&t.params, &t.authority_key, &certificate);
+		assert_eq!(traced_id, t.user_key.id());
 	}
 }

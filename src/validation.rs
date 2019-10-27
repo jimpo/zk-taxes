@@ -1,7 +1,7 @@
 /// Exports functions and structs that define and verify transaction validity.
 
 use bellman::{gadgets::multipack, groth16};
-use ff::{PrimeField, ScalarEngine};
+use ff::PrimeField;
 use std::cmp;
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;

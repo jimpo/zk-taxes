@@ -34,6 +34,17 @@ impl<'a, E> Circuit<'a, E>
 	}
 }
 
+impl<'a, E> Clone for Circuit<'a, E>
+	where E: JubjubEngine,
+{
+	fn clone(&self) -> Self {
+		Circuit {
+			params: self.params,
+			assigned: self.assigned.clone(),
+		}
+	}
+}
+
 impl<'a, E> bellman::Circuit<E> for Circuit<'a, E>
 	where E: JubjubEngine,
 {
